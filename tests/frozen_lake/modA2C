@@ -7,44 +7,52 @@ class ModA2C(A2C):
         super().__init__(*args, **kwargs)
 
     def train(self):
-        # Custom training logic
+        # set training mode for policy
         self.policy.set_training_mode(True)
 
+        # train on the collected batch of data
         for rollout_data in self.rollout_buffer.get(self.batch_size):
             actions = rollout_data.actions
 
-            # Custom loss calculation
+            # evaluate actions based on the current policy given the observations and actions from the rollout buffer
             values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
 
+            # relative improvement over baseline
+            # Advantage = (Reward received + Discounted value of next state) - Value of current state
             advantages = rollout_data.advantages
 
-            # Custom advantage normalization
+            # Normalize advantages for better training stability
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-            # Custom policy loss with additional penalty
+            # Increases probability of actions with positive advantages, decreases probability of actions with negative advantages.
+            # policy loss with additional penalty
+            # Responsible for updating actor for action selection.
             policy_loss = -(advantages * log_prob).mean()
 
-            # Custom value loss
+            # value loss
+            # updates critic (state value estimation)
             value_loss = th.nn.functional.mse_loss(rollout_data.returns, values)
 
-            # Custom entropy bonus
+            # High entropy = more random/exploratory actions
+            # Low entropy = more deterministic/exploitative actions
+            # Negative sign in loss = reward higher entropy
             entropy_loss = -th.mean(entropy)
 
-            # Combined loss with custom weights
+            # Combined loss with weights
             loss = policy_loss + 0.5 * value_loss + 0.01 * entropy_loss
 
             # Backpropagation
             self.policy.optimizer.zero_grad()
             loss.backward()
+            # Limits the magnitude of gradients during backpropagation to prevent exploding gradients
             th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.policy.optimizer.step()
 
         self._n_updates += 1
 
     def collect_rollouts(self, env, callback, rollout_buffer, n_rollout_steps):
-        # Custom rollout collection with modified reward processing
+        # rollout collection with reward processing
         rollout_buffer.reset()
-
         callback.on_rollout_start()
 
         for step in range(n_rollout_steps):
@@ -56,7 +64,7 @@ class ModA2C(A2C):
 
             new_obs, rewards, dones, infos = env.step(actions)
 
-            # Custom reward modification
+            # Custom reward modification (Think of some more ways to do reward analysis and shaping)
             rewards = self._custom_reward_processing(rewards, new_obs, dones)
 
             rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
