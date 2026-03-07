@@ -9,9 +9,9 @@ class Node:
 
     def __init__(self, state, parent, action):
         self.state = state
-        self.parent = parent
+        self.parent: Node = parent
         self.action = action
-        self.children = []
+        self.children: list[Node] = []
         self.visits = 0  # Number of times this node was visited
         self.value = 0.0  # Total value (reward) accumulated from simulations passing through this node
         self.untried_actions = []
@@ -33,9 +33,9 @@ class Node:
         )
         return score
 
-    def best_child(self, exploration_constant=math.sqrt(2)):
+    def best_child(self, exploration_constant) -> "Node":
         max_score = float("-inf")
-        best_child = None
+        best_child = None  # Return self if no children (should not happen if called correctly)
         for child in self.children:
             score = child.ucb1_score(exploration_constant)
             if score > max_score:
@@ -45,18 +45,9 @@ class Node:
 
 
 class MCTS:
-    """Monte Carlo Tree Search algorithm for OpenAI Gymnasium environments."""
+    """Monte Carlo Tree Search algorithm"""
 
-    def __init__(self, env, num_simulations=1000, exploration_constant=math.sqrt(2), max_rollout_depth=100):
-        """
-        Initialize the MCTS algorithm.
-
-        Args:
-            env: An OpenAI Gymnasium environment instance.
-            num_simulations: Number of MCTS iterations to run per action selection.
-            exploration_constant: The exploration parameter c for UCB1.
-            max_rollout_depth: Maximum number of steps in a rollout before stopping.
-        """
+    def __init__(self, env: gym.Env, num_simulations, exploration_constant, max_rollout_depth):
         self.env = env
         self.num_simulations = num_simulations
         self.exploration_constant = exploration_constant
@@ -78,66 +69,49 @@ class MCTS:
         """
         pass
 
-    def select(self, node):
-        """
-        Selection phase: traverse the tree from the root to a leaf node.
+    def select(self, node: Node) -> Node:
+        current_Node = node
+        # Find a leaf node to expand: keep selecting the best child until we find a node that is not fully expanded or is terminal
+        while current_Node.is_fully_expanded() and not current_Node.is_terminal():
+            best_node = current_Node.best_child(self.exploration_constant)
 
-        Starting from the given node, repeatedly select the best child
-        (via UCB1) until reaching a node that is not fully expanded or
-        is terminal.
+            if best_node is None:
+                break  # No children, return the current leaf node
+            current_Node = best_node
+        return current_Node
 
-        Args:
-            node: The root MCTSNode to start selection from.
+    def expand(self, node: Node) -> Node:
+        # Pick an untried action
+        action = node.untried_actions.pop()
+        cloned_env = self.clone_env_state(node.state)
 
-        Returns:
-            The selected MCTSNode (a leaf or not-fully-expanded node).
-        """
-        pass
+        # Simulate the action in the cloned environment
+        next_state, reward, done, _, _ = cloned_env.step(action)
+        child_node = Node(state=next_state, parent=node, action=action)
 
-    def expand(self, node):
-        """
-        Expansion phase: add a new child node to the tree.
+        # Initialize the child node's untried actions
+        child_node.untried_actions = list(range(self.env.action_space.n))
 
-        Pick one untried action from the node, simulate it in the environment
-        to get the resulting state, and create a new child MCTSNode.
+        return child_node
 
-        Args:
-            node: The MCTSNode to expand.
+    def rollout(self, node: Node) -> float:
+        cloned_env = self.clone_env_state(node.state)
+        # Cumulate rewards until a terminal state is reached or max rollout depth is hit
+        cumulative_reward = 0.0
+        for _ in range(self.max_rollout_depth):
+            action = cloned_env.action_space.sample()
+            _, reward, done, _, _ = cloned_env.step(action)
+            cumulative_reward += reward
+            if done:
+                break
+        return cumulative_reward
 
-        Returns:
-            The newly created child MCTSNode.
-        """
-        pass
-
-    def rollout(self, node):
-        """
-        Simulation/rollout phase: play out a random episode from the node's state.
-
-        From the given node's state, repeatedly take random actions until
-        reaching a terminal state or the max_rollout_depth. Use the
-        environment's step function to simulate.
-
-        Args:
-            node: The MCTSNode to start the rollout from.
-
-        Returns:
-            The cumulative reward obtained during the rollout.
-        """
-        pass
-
-    def backpropagate(self, node, reward):
-        """
-        Backpropagation phase: propagate the rollout result up the tree.
-
-        Starting from the given node, walk up to the root, incrementing
-        the visit count and adding the reward to the value of each node
-        along the path.
-
-        Args:
-            node: The MCTSNode where the rollout ended (leaf node).
-            reward: The reward obtained from the rollout.
-        """
-        pass
+    def backpropagate(self, node: Node, reward: float):
+        # Propagate the reward up the tree
+        while node is not None:
+            node.visits += 1
+            node.value += reward
+            node = node.parent
 
     def get_action_probabilities(self, root):
         """
@@ -155,18 +129,9 @@ class MCTS:
         """
         pass
 
-    def clone_env_state(self, state):
-        """
-        Create a deep copy of the environment at the given state.
-
-        MCTS requires simulating actions without modifying the real environment.
-        This method should clone/restore the environment so that rollouts
-        and expansions don't affect the true game state.
-
-        Args:
-            state: The environment state to clone.
-
-        Returns:
-            A deep copy of the environment set to the given state.
-        """
-        pass
+    def clone_env_state(self, state) -> gym.Env:
+        cloned_env = deepcopy(self.env)
+        cloned_env.reset()
+        # overwrites the state to the specific one you want
+        cloned_env.env.state = state
+        return cloned_env
