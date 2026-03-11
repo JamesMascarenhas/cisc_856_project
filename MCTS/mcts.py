@@ -48,26 +48,35 @@ class MCTS:
     """Monte Carlo Tree Search algorithm"""
 
     def __init__(self, env: gym.Env, num_simulations, exploration_constant, max_rollout_depth):
-        self.env = env
+        self.env: gym.Env = env
         self.num_simulations = num_simulations
         self.exploration_constant = exploration_constant
         self.max_rollout_depth = max_rollout_depth
 
+    # Decides the best action to take from the given state by running MCTS simulations
     def search(self, state):
-        """
-        Run the full MCTS algorithm from the given state and return the best action.
+        # Create the root node for the current state
+        root = Node(state=state, parent=None, action=None)
+        # No actions have been tried from the root yet, so initialize the untried actions to all possible actions
+        root.untried_actions = list(range(len(self.env.action_space)))
 
-        This is the main entry point. It creates the root node, runs
-        num_simulations iterations of select -> expand -> rollout -> backpropagate,
-        then returns the action leading to the most-visited child.
+        for _ in range(self.num_simulations):
+            # Selection: Start from the root and select child nodes until we reach a node that is not fully expanded or is terminal
+            node = self.select(root)
+            if not node.is_terminal():
+                child_node = self.expand(node)
+                node.children.append(child_node)
+                reward = self.rollout(child_node)
+                self.backpropagate(child_node, reward)
 
-        Args:
-            state: The current environment state to search from.
+        # Get best child fro the root
+        best_child = Node(state=None, parent=None, action=None)
+        for child in root.children:
+            if child.visits > best_child.visits:
+                best_child = child
 
-        Returns:
-            The best action to take from the current state.
-        """
-        pass
+        # choose the action of the most visited child
+        return best_child.action
 
     def select(self, node: Node) -> Node:
         current_Node = node
@@ -113,25 +122,19 @@ class MCTS:
             node.value += reward
             node = node.parent
 
-    def get_action_probabilities(self, root):
-        """
-        Compute action probabilities based on visit counts of the root's children.
+    def get_action_probabilities(self, root: Node):
+        action_probabilities = np.zeros(len(self.env.action_space))
+        total_visits = sum(child.visits for child in root.children)
+        if total_visits == 0:
+            return action_probabilities
 
-        After all simulations, calculate the probability of each action
-        proportional to how many times each child was visited. This can
-        be used for training or for stochastic action selection.
-
-        Args:
-            root: The root MCTSNode after search is complete.
-
-        Returns:
-            A numpy array of action probabilities over the action space.
-        """
-        pass
+        for child in root.children:
+            action_probabilities[child.action] = child.visits / total_visits
+        return action_probabilities
 
     def clone_env_state(self, state) -> gym.Env:
-        cloned_env = deepcopy(self.env)
+        cloned_env: gym.Env = deepcopy(self.env)
         cloned_env.reset()
         # overwrites the state to the specific one you want
-        cloned_env.env.state = state
+        cloned_env.unwrapped.state = state
         return cloned_env
