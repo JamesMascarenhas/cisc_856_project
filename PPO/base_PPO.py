@@ -1,153 +1,218 @@
-from stable_baselines3 import PPO
-import torch as th
+"""
+ModPPO — Modified Proximal Policy Optimization built on Stable-Baselines3.
 
-# This file shows the structure to create an agent using PPO as base
-# PPO extends A2C with a clipped surrogate objective and multiple
-# update epochs per rollout, improving sample efficiency and stability.
+This class extends the SB3 PPO implementation with hooks for:
+  - Reward shaping / reward processing  (override `reward_processing`)
+  - Custom action selection strategies  (override `action_selection`)
+
+The train() method is intentionally kept close to the upstream SB3 PPO
+(Raffin et al., 2021) so that results are directly comparable to the
+classical baseline used in Dragan et al. (2022)
+
+Key SB3 baseline settings for FrozenLake (from the proposal):
+  - Stochastic mode (slippery), slip probability ≈ 0.2
+  - Sparse reward (goal = 1, otherwise 0)
+  - Two hidden layers, tested sizes: 2, 4, 8, 16 neurons
+  - One-hot encoded state input
+"""
+
+import numpy as np
+import torch as th
+from gymnasium import spaces
+from torch.nn import functional as F
+
+from stable_baselines3 import PPO
+from stable_baselines3.common.utils import explained_variance
 
 
 class ModPPO(PPO):
+    """
+    Extended PPO that keeps full SB3 training logic intact while exposing
+    hooks for experimentation (reward shaping, exploration strategies).
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def train(self):
-        # set training mode for policy
+    # Training - matches SB3 PPO exactly, no changes needed
+    def train(self) -> None:
+        """
+        Update policy using the currently gathered rollout buffer.
+
+        This follows the SB3 PPO implementation faithfully:
+        1. Set policy to training mode
+        2. Update learning rate schedule
+        3. Resolve clip_range (may be a schedule, not a bare float)
+        4. Loop over n_epochs × mini-batches from the rollout buffer
+        5. Compute clipped surrogate loss, value loss, entropy loss
+        6. Back-propagate and clip gradients
+        7. Optional early stopping via target_kl
+        """
+        # Switch to train mode (affects batch norm / dropout)
         self.policy.set_training_mode(True)
 
-        # PPO iterates over the collected rollout data for multiple epochs
-        # (controlled by self.n_epochs), unlike A2C which does a single pass.
-        # This improves sample efficiency while the clipping prevents
-        # destructively large policy updates.
+        # Update optimizer learning rate from schedule
+        self._update_learning_rate(self.policy.optimizer)
+
+        # Resolve current clip range from schedule
+        # After _setup_model(), self.clip_range is a FloatSchedule callable
+        clip_range = self.clip_range(self._current_progress_remaining)
+
+        # Optional: clip range for the value function
+        if self.clip_range_vf is not None:
+            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+
+        # Logging accumulators
+        entropy_losses = []
+        pg_losses, value_losses = [], []
+        clip_fractions = []
+
+        continue_training = True
+
+        # PPO trains for n_epochs over the same collected rollout data
         for epoch in range(self.n_epochs):
+            approx_kl_divs = []
+
+            # Mini-batch iteration over the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
 
-                # evaluate actions based on the current policy given the
-                # observations and actions from the rollout buffer.
-                # returns - estimated value, log likelihood of taking those
-                # actions, and entropy of the action distribution.
-                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                # FrozenLake is Discrete — SB3 stores actions as float,
+                # but evaluate_actions needs long for discrete spaces
+                if isinstance(self.action_space, spaces.Discrete):
+                    actions = rollout_data.actions.long().flatten()
 
-                # relative improvement over baseline
-                # Advantage = (Reward received + Discounted value of next state) - Value of current state
+                # Forward pass: get current policy's values, log probs, entropy
+                values, log_prob, entropy = self.policy.evaluate_actions(
+                    rollout_data.observations, actions
+                )
+                values = values.flatten()
+
+                # --- Advantage normalization ---
                 advantages = rollout_data.advantages
-
-                # Normalize advantages for better training stability
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                if self.normalize_advantage and len(advantages) > 1:
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # --- PPO Clipped Surrogate Objective ---
                 # ratio = π_θ(a|s) / π_θ_old(a|s)
-                # Measures how much the new policy deviates from the old one.
-                # log_prob comes from the current (updated) policy.
-                # rollout_data.old_log_prob comes from the policy that collected the data.
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
 
-                # Unclipped policy loss term (standard policy gradient)
-                policy_loss_unclipped = advantages * ratio
+                # Unclipped and clipped policy loss
+                policy_loss_1 = advantages * ratio
+                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
 
-                # Clipped policy loss term — clips ratio to [1-ε, 1+ε]
-                # Prevents excessively large updates that could destabilize training.
-                policy_loss_clipped = advantages * th.clamp(ratio, 1 - self.clip_range, 1 + self.clip_range)
+                # Logging
+                pg_losses.append(policy_loss.item())
+                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
+                clip_fractions.append(clip_fraction)
 
-                # Take the minimum to form a pessimistic lower bound on the objective.
-                # The negative sign converts the maximization objective into a loss to minimize.
-                policy_loss = -th.min(policy_loss_unclipped, policy_loss_clipped).mean()
-
-                # Value loss
-                # Updates the critic (state value estimation).
-                # PPO also optionally clips the value function update (self.clip_range_vf).
-                if self.clip_range_vf is not None:
-                    # Clip value estimates around the old values for stability
-                    values_clipped = rollout_data.old_values + th.clamp(
-                        values - rollout_data.old_values,
-                        -self.clip_range_vf,
-                        self.clip_range_vf,
-                    )
-                    value_loss_clipped = th.nn.functional.mse_loss(rollout_data.returns, values_clipped)
-                    value_loss_unclipped = th.nn.functional.mse_loss(rollout_data.returns, values)
-                    # Use the larger of the two losses (conservative estimate)
-                    value_loss = th.max(value_loss_unclipped, value_loss_clipped)
+                # --- Value loss ---
+                if self.clip_range_vf is None:
+                    values_pred = values
                 else:
-                    value_loss = th.nn.functional.mse_loss(rollout_data.returns, values)
+                    # Clip value function update around old values
+                    values_pred = rollout_data.old_values + th.clamp(
+                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                    )
+                value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                value_losses.append(value_loss.item())
 
-                # Entropy loss
-                # High entropy = more random/exploratory actions
-                # Low entropy = more deterministic/exploitative actions
-                # Negative sign in loss = reward higher entropy
-                entropy_loss = -th.mean(entropy)
+                # --- Entropy loss (encourages exploration) ---
+                if entropy is None:
+                    entropy_loss = -th.mean(-log_prob)
+                else:
+                    entropy_loss = -th.mean(entropy)
+                entropy_losses.append(entropy_loss.item())
 
-                # Combined loss with weights (matches proposal: ent_coef=0.01, vf_coef=0.5)
-                loss = policy_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
+                # --- Combined loss ---
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
-                # Backpropagation
+                # --- Approximate KL for early stopping ---
+                with th.no_grad():
+                    log_ratio = log_prob - rollout_data.old_log_prob
+                    approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                    approx_kl_divs.append(approx_kl_div)
+
+                if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
+                    continue_training = False
+                    if self.verbose >= 1:
+                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                    break
+
+                # --- Optimization step ---
                 self.policy.optimizer.zero_grad()
                 loss.backward()
-                # Limits the magnitude of gradients during backpropagation
-                # to prevent exploding gradients
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
 
-        self._n_updates += self.n_epochs
+            self._n_updates += 1
+            if not continue_training:
+                break
 
-    def collect_rollouts(self, env, callback, rollout_buffer, n_rollout_steps):
-        # Rollout collection with reward processing.
-        # PPO is on-policy: data is collected under the current policy,
-        # used for n_epochs of updates, then discarded.
-        rollout_buffer.reset()
-        callback.on_rollout_start()
+        # --- Logging ---
+        explained_var = explained_variance(
+            self.rollout_buffer.values.flatten(),
+            self.rollout_buffer.returns.flatten(),
+        )
+        self.logger.record("train/entropy_loss", np.mean(entropy_losses))
+        self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record("train/value_loss", np.mean(value_losses))
+        self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
+        self.logger.record("train/clip_fraction", np.mean(clip_fractions))
+        self.logger.record("train/loss", loss.item())
+        self.logger.record("train/explained_variance", explained_var)
+        if hasattr(self.policy, "log_std"):
+            self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/clip_range", clip_range)
+        if self.clip_range_vf is not None:
+            self.logger.record("train/clip_range_vf", clip_range_vf)
 
-        for step in range(n_rollout_steps):
-            with th.no_grad():
-                obs_tensor = th.as_tensor(self._last_obs).to(self.device)
-                actions, values, log_probs = self.policy(obs_tensor)
-
-            actions = actions.cpu().numpy()
-
-            new_obs, rewards, dones, infos = env.step(actions)
-
-            # Reward modification — hook for reward shaping experiments
-            rewards = self.reward_processing(rewards, new_obs, dones)
-
-            rollout_buffer.add(
-                self._last_obs,
-                actions,
-                rewards,
-                self._last_episode_starts,
-                values,
-                log_probs,
-            )
-
-            self._last_obs = new_obs
-            # If dones is True, the next step is the start of a new episode.
-            self._last_episode_starts = dones
-
-        return True
-
+    # ------------------------------------------------------------------
+    # Extension hooks — override these in subclasses for experiments
+    # ------------------------------------------------------------------
     def reward_processing(self, rewards, obs, dones):
-        # Reward shaping logic — modify here for different reward configurations.
-        # Baseline: amplify positive rewards, penalise neutral/negative steps.
-        return rewards * 2.0 if rewards > 0 else rewards - 0.5
+        """
+        Reward shaping hook. Override in subclasses to experiment.
 
-    # Prediction logic with action selection strategy
-    def select_action(self, observation, state=None, episode_start=None, deterministic=False):
-        # Prediction logic
-        self.policy.set_training_mode(False)
+        Default: no modification (matches SB3 baseline).
 
-        observation, vectorized_env = self.policy.obs_to_tensor(observation)
+        Args:
+            rewards: np.ndarray of rewards from env.step()
+            obs:     np.ndarray of new observations
+            dones:   np.ndarray of done flags
 
-        with th.no_grad():
-            actions = self.policy.get_distribution(observation).get_actions(deterministic=deterministic)
-
-            # Apply action selection strategy (e.g. epsilon-greedy, UCB, Boltzmann)
-            if not deterministic:
-                actions = self.action_selection(actions, observation)
-
-        actions = actions.cpu().numpy()
-
-        return actions.item()
+        Returns:
+            np.ndarray of (possibly modified) rewards
+        """
+        return rewards
 
     def action_selection(self, actions, obs):
-        # Exploration strategies during action selection.
-        # Override this method to implement custom strategies such as
-        # epsilon-greedy, Boltzmann/softmax sampling, or UCB-based selection.
+        """
+        Exploration strategy hook. Override for epsilon-greedy, Boltzmann, etc.
+
+        Default: no modification (standard PPO stochastic policy).
+
+        Args:
+            actions: tensor of actions from the policy distribution
+            obs:     tensor of current observations
+
+        Returns:
+            tensor of (possibly modified) actions
+        """
         return actions
+
+    def select_action(self, observation, deterministic=False):
+        """
+        Convenience wrapper around SB3's predict() for use in evaluation loops.
+
+        Args:
+            observation: current env observation
+            deterministic: if True, pick the greedy action
+
+        Returns:
+            action (int for discrete spaces)
+        """
+        action, _state = self.predict(observation, deterministic=deterministic)
+        return action
