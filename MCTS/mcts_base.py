@@ -3,6 +3,10 @@ import numpy as np
 import math
 from copy import deepcopy
 
+# Rollout policy: Random
+# Final Action selection: Most visited child (robust child)
+# Selection policy: UCT with reward normalization to [0, 1] based on observed min/max rewards in the tree (to handle different reward scales across environments)
+
 
 class Node:
     """Represents a single node in the MCTS search tree."""
@@ -16,6 +20,7 @@ class Node:
         self.value = 0.0  # Total value (reward) accumulated from simulations passing through this node
         self.untried_actions = []
         self.done = False  # Whether this node represents a terminal state
+        self.terminal_reward = 0.0  # Reward stored at creation for terminal nodes
 
     def is_fully_expanded(self):
         # If no untried actions remain, this node is fully expanded
@@ -49,7 +54,7 @@ class Node:
 class MCTSBase:
     """Monte Carlo Tree Search algorithm"""
 
-    def __init__(self, env: gym.Env, num_simulations, exploration_constant, max_rollout_depth):
+    def __init__(self, env: gym.Env, num_simulations, exploration_constant, max_rollout_depth, verbose=False):
         # Headless sim env for cloning — strip render_mode so simulations don't render
         sim_kwargs = {k: v for k, v in env.unwrapped.spec.kwargs.items() if k != "render_mode"}
         self.sim_env: gym.Env = gym.make(env.unwrapped.spec.id, **sim_kwargs)
@@ -58,6 +63,11 @@ class MCTSBase:
         self.max_rollout_depth = max_rollout_depth
         self.min_value = float("inf")
         self.max_value = float("-inf")
+        self.verbose = verbose
+
+    def log(self, message):
+        if self.verbose:
+            print(message)
 
     # Decides the best action to take from the given state by running MCTS simulations
     def search(self, state):
@@ -71,10 +81,15 @@ class MCTSBase:
         for _ in range(self.num_simulations):
             # Selection: Start from the root and select child nodes until we reach a node that is not fully expanded or is terminal
             node = self.select(root)
-            if not node.is_terminal():
-                child_node = self.expand(node)
+            if node.is_terminal():
+                self.backpropagate(node, node.terminal_reward)
+            elif not node.is_fully_expanded():
+                child_node, step_reward = self.expand(node)
                 node.children.append(child_node)
-                reward = self.rollout(child_node)
+                # For terminal children (goal/hole), use the step reward directly —
+                # rollout from a terminal state won't reproduce the reward that was
+                # given for arriving there (e.g. goal gives reward=1 on arrival only)
+                reward = step_reward if child_node.is_terminal() else step_reward + self.rollout(child_node)
                 self.min_value = min(self.min_value, reward)
                 self.max_value = max(self.max_value, reward)
                 self.backpropagate(child_node, reward)
@@ -99,20 +114,28 @@ class MCTSBase:
             current_Node = best_node
         return current_Node
 
-    def expand(self, node: Node) -> Node:
+    def expand(self, node: Node) -> tuple["Node", float]:
         # Pick an untried action
         action = node.untried_actions.pop()
         cloned_env = self.clone_env_state(node.state)
 
         # Simulate the action in the cloned environment
-        next_state, reward, done, _, _ = cloned_env.step(action)
+        next_state, step_reward, done, truncated, info = cloned_env.step(action)
+        if step_reward == 1 and done:
+            self.log("Hit a goal during expansion!")
+        elif done:
+            self.log(f"Hit a hole during expansion! State: {next_state}")
         child_node = Node(state=next_state, parent=node, action=action)
-        child_node.done = done
+
+        # Treat wall hits (same state, not done) as terminal to prevent infinite cycles
+        is_wall_hit = next_state == node.state and not done
+        child_node.done = done or is_wall_hit
+        child_node.terminal_reward = step_reward if child_node.done else 0.0
 
         # Initialize the child node's untried actions (empty if terminal)
-        child_node.untried_actions = [] if done else list(range(self.sim_env.action_space.n))
+        child_node.untried_actions = [] if child_node.done else list(range(self.sim_env.action_space.n))
 
-        return child_node
+        return child_node, step_reward
 
     def rollout(self, node: Node) -> float:
         cloned_env = self.clone_env_state(node.state)
@@ -147,5 +170,5 @@ class MCTSBase:
         cloned_env: gym.Env = deepcopy(self.sim_env)
         cloned_env.reset()
         # overwrites the state to the specific one you want
-        cloned_env.unwrapped.state = state
+        cloned_env.unwrapped.s = state
         return cloned_env

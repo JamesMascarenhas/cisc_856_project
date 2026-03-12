@@ -11,15 +11,45 @@ from MCTS.mcts import MCTS
 from MCTS.mcts_base import MCTSBase
 from metrics.plot import plot_progress
 
+four_x_four_map = [
+    "SFFF",
+    "FHFH",
+    "FFFH",
+    "HFFG",
+]
+
+eight_x_eight_map = [
+    "SFFFFFFF",
+    "FHFHFHFF",
+    "FFFHFFFF",
+    "FFFFFHFF",
+    "FFFHFFFF",
+    "FHHFFFHF",
+    "FHFFHFHF",
+    "FFFHFFFG",
+]
+verbose = False
+
 
 def selected_agent(args):
     if args.mcts_base:
         # Using the specs from the project proposal for MCTS
-        return MCTSBase(env=env, num_simulations=1000, exploration_constant=1.4, max_rollout_depth=100)
+        return MCTSBase(
+            env=env,
+            num_simulations=1000,
+            exploration_constant=1.4,
+            max_rollout_depth=100,
+            verbose=args.verbose,
+        )
     return ModA2C("MlpPolicy", env)
 
 
-def evaluate_mcts(env, agent, episodes):
+def log(message):
+    if verbose:
+        print(f"{message}")
+
+
+def evaluate_mcts(env, agent, episodes, verbose=False):
     """Run MCTS for a fixed number of episodes and report success rate and avg reward."""
     total_rewards = []
     successes = 0
@@ -29,10 +59,14 @@ def evaluate_mcts(env, agent, episodes):
         episode_reward = 0.0
         done = False
 
+        log(f"--- Starting episode {episode + 1} ---")
         while not done:
             action = agent.search(obs)
+            log(f"Taking action: {action} at state: {obs}")
             obs, reward, terminated, truncated, info = env.step(action)
             episode_reward += reward
+            if terminated:
+                log(f"Episode ended with reward: {reward} (terminated)")
             done = terminated or truncated
 
         total_rewards.append(episode_reward)
@@ -49,7 +83,7 @@ def evaluate_mcts(env, agent, episodes):
 
 def train_agent(env, agent, episodes):
     if isinstance(agent, (MCTS, MCTSBase)):
-        evaluate_mcts(env, agent, episodes)
+        evaluate_mcts(env, agent, episodes, verbose=verbose)
     else:
         # Train the agent
         num_episodes = args.episodes
@@ -101,10 +135,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-e", "--episodes", type=int, default=100, help="Number of training episodes")
     parser.add_argument("--mcts_base", action="store_true", help="Use MCTS as the base agent")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
+    verbose = args.verbose
 
     # Set up the environment
-    env = gym.make("FrozenLake-v1", desc=generate_random_map(size=4), is_slippery=False, render_mode="human")
+    env = gym.make("FrozenLake-v1", desc=four_x_four_map, is_slippery=False, render_mode="human")
 
     # Initialize agent
     agent = selected_agent(args)

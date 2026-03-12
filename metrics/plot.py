@@ -44,5 +44,5 @@ def plot_progress(total_rewards, alg_name):
 
     plt.tight_layout()
     filename = path.join("graphs", f"{alg_name}_progress.png")
-    plt.savefig(filename)
+    plt.savefig(filename, dpi=500)
     plt.show()
