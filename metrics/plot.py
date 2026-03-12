@@ -46,3 +46,48 @@ def plot_progress(total_rewards, alg_name):
     filename = path.join("graphs", f"{alg_name}_progress.png")
     plt.savefig(filename, dpi=500)
     plt.show()
+
+
+def plot_time_stats(episode_times, steps_per_episode, avg_search_times, alg_name):
+    n = len(episode_times)
+    window = max(1, n // 10)
+    episodes = np.arange(1, n + 1)
+
+    search_times_ms = [t * 1000 for t in avg_search_times]
+
+    def rolling(data):
+        return np.convolve(data, np.ones(window) / window, mode="valid")
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=False)
+    fig.suptitle(f"{alg_name} — Time Statistics", fontsize=13)
+
+    # Episode time
+    axes[0].plot(episodes, episode_times, alpha=0.3, color="tab:blue", label="Episode time (s)")
+    axes[0].plot(episodes[window - 1 :], rolling(episode_times), color="tab:blue", label=f"{window}-ep avg")
+    axes[0].set_ylabel("Time (s)")
+    axes[0].set_title("Time per Episode")
+    axes[0].legend(loc="upper right")
+
+    # Steps per episode
+    axes[1].plot(episodes, steps_per_episode, alpha=0.3, color="tab:orange", label="Steps")
+    axes[1].plot(
+        episodes[window - 1 :], rolling(steps_per_episode), color="tab:orange", label=f"{window}-ep avg"
+    )
+    axes[1].set_ylabel("Steps")
+    axes[1].set_title("Steps per Episode")
+    axes[1].legend(loc="upper right")
+
+    # Avg search time per step
+    axes[2].plot(episodes, search_times_ms, alpha=0.3, color="tab:green", label="Avg search time (ms)")
+    axes[2].plot(
+        episodes[window - 1 :], rolling(search_times_ms), color="tab:green", label=f"{window}-ep avg"
+    )
+    axes[2].set_xlabel("Episode")
+    axes[2].set_ylabel("Time (ms)")
+    axes[2].set_title("Avg Search Time per Step")
+    axes[2].legend(loc="upper right")
+
+    plt.tight_layout()
+    filename = path.join("graphs", f"{alg_name}_time_stats.png")
+    plt.savefig(filename, dpi=500)
+    plt.show()
