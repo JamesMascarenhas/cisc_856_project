@@ -7,7 +7,8 @@ from stable_baselines3 import A2C
 from tqdm import tqdm
 from gymnasium.envs.toy_text.frozen_lake import generate_random_map
 from A2C.base_A2C import ModA2C
-from MCTS.mcts import MCTS
+from MCTS.mcts_greedy_rollout import MCTS_GreedyRollout
+from MCTS.mcts_ucb1 import MCTS_UCB1
 from MCTS.mcts_base import MCTSBase
 from metrics.plot import plot_progress, plot_time_stats
 
@@ -52,15 +53,37 @@ verbose = False
 
 
 def selected_agent(args):
+    # Scale simulations and rollout depth with grid size so the tree has enough signal
+    sim_count = {4: 1000, 8: 3000, 16: 8000}[args.grid]
+    rollout_depth = {4: 100, 8: 200, 16: 400}[args.grid]
+
     if args.mcts_base:
         # Using the specs from the project proposal for MCTS
         return MCTSBase(
             env=env,
-            num_simulations=1000,
+            num_simulations=sim_count,
             exploration_constant=1.4,
-            max_rollout_depth=100,
+            max_rollout_depth=rollout_depth,
             verbose=args.verbose,
         )
+    elif args.mcts_ucb1:
+        return MCTS_UCB1(
+            env=env,
+            num_simulations=sim_count,
+            exploration_constant=1.4,
+            max_rollout_depth=rollout_depth,
+            verbose=args.verbose,
+        )
+    elif args.mcts_greedy:
+        return MCTS_GreedyRollout(
+            env=env,
+            num_simulations=sim_count,
+            exploration_constant=1.4,
+            max_rollout_depth=rollout_depth,
+            epsilon=0.1,  # 10% random actions in rollout
+            verbose=args.verbose,
+        )
+
     return ModA2C("MlpPolicy", env)
 
 
@@ -120,7 +143,7 @@ def evaluate_mcts(env, agent, episodes, verbose=False):
 
 
 def train_agent(env, agent, episodes):
-    if isinstance(agent, (MCTS, MCTSBase)):
+    if isinstance(agent, (MCTSBase, MCTS_UCB1, MCTS_GreedyRollout)):
         evaluate_mcts(env, agent, episodes, verbose=verbose)
     else:
         # Train the agent
@@ -162,7 +185,7 @@ def test_agent(env, agent):
 
 
 def canTest(args):
-    if args.mcts_base:
+    if args.mcts_base or args.mcts_ucb1 or args.mcts_greedy:
         return False
     else:
         return True
@@ -173,6 +196,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-e", "--episodes", type=int, default=100, help="Number of training episodes")
     parser.add_argument("--mcts_base", action="store_true", help="Use MCTS as the base agent")
+    parser.add_argument("--mcts_ucb1", action="store_true", help="Use MCTS with UCB1 for selection")
+    parser.add_argument("--mcts_greedy", action="store_true", help="Use MCTS with greedy rollout policy")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
         "-g", "--grid", type=int, choices=[4, 8, 16], default=4, help="Grid size for FrozenLake"

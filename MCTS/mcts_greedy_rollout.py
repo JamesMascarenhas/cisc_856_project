@@ -3,7 +3,7 @@ import numpy as np
 import math
 from copy import deepcopy
 
-# Rollout policy: Random
+# Rollout policy: Epsilon-greedy (greedy = best immediate reward via one-step lookahead)
 # Final Action selection: Most visited child (robust child)
 # Selection policy: UCT with reward normalization to [0, 1] based on observed min/max rewards in the tree (to handle different reward scales across environments)
 
@@ -51,16 +51,25 @@ class Node:
         return best_child
 
 
-class MCTSBase:
+class MCTS_GreedyRollout:
     """Monte Carlo Tree Search algorithm"""
 
-    def __init__(self, env: gym.Env, num_simulations, exploration_constant, max_rollout_depth, verbose=False):
+    def __init__(
+        self,
+        env: gym.Env,
+        num_simulations,
+        exploration_constant,
+        max_rollout_depth,
+        epsilon=0.5,
+        verbose=False,
+    ):
         # Headless sim env for cloning — strip render_mode so simulations don't render
         sim_kwargs = {k: v for k, v in env.unwrapped.spec.kwargs.items() if k != "render_mode"}
         self.sim_env: gym.Env = gym.make(env.unwrapped.spec.id, **sim_kwargs)
         self.num_simulations = num_simulations
         self.exploration_constant = exploration_constant
         self.max_rollout_depth = max_rollout_depth
+        self.epsilon = epsilon  # Probability of random action in rollout
         self.min_value = float("inf")
         self.max_value = float("-inf")
         self.verbose = verbose
@@ -144,15 +153,30 @@ class MCTSBase:
 
     def rollout(self, node: Node) -> float:
         cloned_env = self.clone_env_state(node.state)
-        # Cumulate rewards until a terminal state is reached or max rollout depth is hit
+        # Epsilon-greedy: with prob epsilon take random action, else take greedy (best immediate reward)
         cumulative_reward = 0.0
         for _ in range(self.max_rollout_depth):
-            action = cloned_env.action_space.sample()
+            if np.random.random() < self.epsilon:
+                action = cloned_env.action_space.sample()
+            else:
+                action = self._greedy_action(cloned_env.unwrapped.s)
             _, reward, done, _, _ = cloned_env.step(action)
             cumulative_reward += reward
             if done:
                 break
         return cumulative_reward
+
+    def _greedy_action(self, state) -> int:
+        # One-step lookahead using the transition model — no env cloning needed
+        # P[state][action] = list of (prob, next_state, reward, done)
+        # Randomly break ties so rollouts stay exploratory when all rewards are equal (e.g. reward=0)
+        expected_rewards = [
+            sum(prob * r for prob, _, r, _ in self.sim_env.unwrapped.P[state][action])
+            for action in range(self.sim_env.action_space.n)
+        ]
+        max_reward = max(expected_rewards)
+        best_actions = [a for a, r in enumerate(expected_rewards) if r == max_reward]
+        return np.random.choice(best_actions)
 
     def backpropagate(self, node: Node, reward: float):
         # Propagate the reward up the tree
