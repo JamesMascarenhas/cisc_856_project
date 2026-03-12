@@ -19,15 +19,35 @@ four_x_four_map = [
 ]
 
 eight_x_eight_map = [
-    "SFFFFFFF",
-    "FHFHFHFF",
-    "FFFHFFFF",
-    "FFFFFHFF",
-    "FFFHFFFF",
-    "FHHFFFHF",
-    "FHFFHFHF",
-    "FFFHFFFG",
+    "SFHFFFHF",
+    "FFFHFFFH",
+    "HFFFHFHF",
+    "FFHFFHFF",
+    "FHFFFFHF",
+    "FFFHFFFH",
+    "HFHFFHFF",
+    "FFFHFFHG",
 ]
+
+sixteen_x_sixteen_map = [
+    "SFFHFFFHFFFHFFFF",
+    "FHFFFHFFHFFHFFHF",
+    "FFHFFFFFHFFHFFFF",
+    "HFFFHFFHFFFHFHFF",
+    "FFFHFFFHFHFFHFFF",
+    "FHFFHFFFHFFFHFHF",
+    "FFFHFFFFHFHFFHFF",
+    "HFFFHFHFFFHFFFHF",
+    "FFHFFFHFHFFFHFFF",
+    "FHFFHFFFHFHFFHFF",
+    "FFFHFFFHFFHFHFFF",
+    "HFHFFFHFHFFFHFFH",
+    "FFFHFHFFFHFFHFFF",
+    "FHFFFHFFHFHFFFHF",
+    "FFHFHFFFHFFFHFFF",
+    "HFFFHFHFFFHFFHFG",
+]
+
 verbose = False
 
 
@@ -140,7 +160,7 @@ if __name__ == "__main__":
     verbose = args.verbose
 
     # Set up the environment
-    env = gym.make("FrozenLake-v1", desc=four_x_four_map, is_slippery=False, render_mode="human")
+    env = gym.make("FrozenLake-v1", desc=eight_x_eight_map, is_slippery=False, render_mode="human")
 
     # Initialize agent
     agent = selected_agent(args)
