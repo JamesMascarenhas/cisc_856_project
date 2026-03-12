@@ -1,31 +1,25 @@
 """
-run_ppo.py — Train and evaluate ModPPO on FrozenLake-v1
-Produces:
-  1. Training reward curve (saved as ppo_training_curve.png)
-  2. Evaluation results printed to console
-  3. Trained model saved as ppo_frozenlake.zip
+run_ppo.py - Train and evaluate ModPPO on FrozenLake-v1
+
+Outputs (saved to output_dir):
+  - ppo_training_curve.png  - moving avg reward over timesteps
+  - ppo_entropy_loss.png    - entropy loss over training
+  - ppo_summary.png         - metrics table for slides
+  - ppo_frozenlake.zip      - saved model
+  - ppo_training_data.npz   - raw data for later analysis
 
 Usage:
-  python run_ppo.py                           # defaults: 50k timesteps, 4x4 map
-  python run_ppo.py --timesteps 100000        # longer training
-  python run_ppo.py --map_size 8              # 8x8 map
-  python run_ppo.py --deterministic           # non-slippery mode
-  python run_ppo.py --slip_prob 0.2           # custom slip probability (Dragan et al.)
-
-Baseline config from the proposal (Dragan et al., 2022):
-  - Stochastic mode, slip probability ≈ 0.2
-  - Sparse reward (goal=1, otherwise 0)
-  - Two hidden layers, sizes: [2, 4, 8, 16]
-  - One-hot encoded state input
-  - 50,000 timesteps
+  python run_ppo.py --hidden_size 16 --output_dir results/ppo_results/hs16
+  python run_ppo.py --hidden_size 8 --output_dir results/ppo_results/hs8
 """
 
 import argparse
 import os
 
 import gymnasium as gym
+from gymnasium import spaces
 import matplotlib
-matplotlib.use("Agg")  # non-interactive backend for saving plots
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from gymnasium.envs.toy_text.frozen_lake import generate_random_map
@@ -35,21 +29,41 @@ from stable_baselines3.common.monitor import Monitor
 
 from PPO.base_PPO import ModPPO
 
-# Record episode rewards during training
-class RewardLoggerCallback(BaseCallback):
+
+# One-hot observation wrapper
+# Dragan et al (2022): "The input to the classical solution is a
+# one-hot vector encoding of the state"
+class OneHotWrapper(gym.ObservationWrapper):
     """
-    Logs episode rewards and lengths during training
-    Works with Monitor-wrapped environments
+    Converts FrozenLake's integer observation into a one-hot vector
+    Raw integers imply ordering (7 > 3) that doesn't exist on the grid
     """
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.n_states = env.observation_space.n
+        self.observation_space = spaces.Box(
+            low=0.0, high=1.0, shape=(self.n_states,), dtype=np.float32
+        )
+
+    def observation(self, obs):
+        one_hot = np.zeros(self.n_states, dtype=np.float32)
+        one_hot[obs] = 1.0
+        return one_hot
+
+
+# Callback to record episode rewards and training losses
+class TrainingLoggerCallback(BaseCallback):
 
     def __init__(self, verbose=0):
         super().__init__(verbose)
         self.episode_rewards = []
         self.episode_lengths = []
         self.timesteps_at_episode = []
+        self.entropy_losses = []
+        self.training_timesteps = []
 
     def _on_step(self) -> bool:
-        # Monitor wrapper stores completed episode info in "infos"
         infos = self.locals.get("infos", [])
         for info in infos:
             if "episode" in info:
@@ -58,163 +72,233 @@ class RewardLoggerCallback(BaseCallback):
                 self.timesteps_at_episode.append(self.num_timesteps)
         return True
 
-# Custom FrozenLake w/ adjustable slip probability
+    def _on_rollout_end(self) -> None:
+        try:
+            logger = self.model.logger.name_to_value
+            self.entropy_losses.append(logger.get("train/entropy_loss", float("nan")))
+            self.training_timesteps.append(self.num_timesteps)
+        except AttributeError:
+            pass
+
+
+# Environment factory
 def make_frozenlake_env(map_size=4, is_slippery=True, slip_prob=1/3, seed=None):
     """
-    Create a FrozenLake environment
-
-    To match Dragan et al. (2022), set slip_prob=0.2
-    Default Gymnasium FrozenLake uses slip_prob=1/3
+    Create FrozenLake with custom slip probability
+    Dragan et al (2022) uses slip_prob=0.2, Gymnasium default is 1/3
     """
     def _init():
         desc = generate_random_map(size=map_size, seed=seed)
         env = gym.make("FrozenLake-v1", desc=desc, is_slippery=is_slippery)
 
-        # Modify transition probabilities if custom slip_prob
         if is_slippery and slip_prob != 1/3:
             for state in env.unwrapped.P:
                 for action in env.unwrapped.P[state]:
                     transitions = env.unwrapped.P[state][action]
-                    # Original: 1/3 for intended, 1/3 each for two perpendicular
-                    # We want: (1 - slip_prob) for intended, slip_prob/2 each for perpendicular
                     if len(transitions) == 3:
                         intended_prob = 1.0 - slip_prob
                         side_prob = slip_prob / 2.0
                         new_transitions = []
-                        for i, (prob, next_state, reward, done) in enumerate(transitions):
-                            if i == 0:
-                                new_transitions.append((side_prob, next_state, reward, done))
-                            elif i == 1:
-                                new_transitions.append((intended_prob, next_state, reward, done))
-                            elif i == 2:
-                                new_transitions.append((side_prob, next_state, reward, done))
+                        for i, (prob, ns, r, d) in enumerate(transitions):
+                            if i == 1:
+                                new_transitions.append((intended_prob, ns, r, d))
+                            else:
+                                new_transitions.append((side_prob, ns, r, d))
                         env.unwrapped.P[state][action] = new_transitions
 
+        env = OneHotWrapper(env)
         env = Monitor(env)
         return env
     return _init
 
-# Plot the training curve
-def plot_training_curve(timesteps, rewards, window=50, title="PPO Training on FrozenLake",
-                        filename="ppo_training_curve.png"):
-    """
-    Plot episode rewards over training with a moving average.
-    """
-    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
 
-    ax.plot(timesteps, rewards, alpha=0.3, color="steelblue", label="Episode Reward")
+# Evaluation
+def evaluate_agent(model, env_fn, n_episodes=1000):
+    """Run trained agent for n episodes, return list of rewards"""
+    eval_env = env_fn()
+    rewards = []
 
-    # Moving average
+    for _ in range(n_episodes):
+        obs, _ = eval_env.reset()
+        done = False
+        ep_reward = 0.0
+        while not done:
+            action = model.select_action(obs, deterministic=True)
+            obs, reward, terminated, truncated, _ = eval_env.step(action)
+            ep_reward += reward
+            done = terminated or truncated
+        rewards.append(ep_reward)
+
+    eval_env.close()
+    return rewards
+
+
+# Metrics (from proposal + Dragan et al methodology)
+def compute_metrics(timesteps, rewards, eval_rewards, window=50):
+    """
+    Sample Efficiency: timestep where 50-episode moving avg first crosses 0.5
+    Convergence: Dragan et al method - bin into 1000-step intervals, smooth
+      with window 10, first point where smoothed value stays within 0.2
+    """
+    metrics = {}
+    metrics["eval_mean"] = np.mean(eval_rewards)
+    metrics["eval_std"] = np.std(eval_rewards)
+    metrics["success_rate"] = np.mean([1 if r > 0 else 0 for r in eval_rewards])
+
+    # Sample efficiency
     if len(rewards) >= window:
         moving_avg = np.convolve(rewards, np.ones(window) / window, mode="valid")
-        # Align timesteps with moving average
-        avg_timesteps = timesteps[window - 1:]
-        ax.plot(avg_timesteps, moving_avg, color="darkblue", linewidth=2,
-                label=f"Moving Avg ({window} episodes)")
+        avg_ts = timesteps[window - 1:]
+        crossed = np.where(moving_avg >= 0.5)[0]
+        metrics["sample_eff_05"] = int(avg_ts[crossed[0]]) if len(crossed) > 0 else "Not reached"
+        metrics["peak_moving_avg"] = float(np.max(moving_avg))
+    else:
+        metrics["sample_eff_05"] = "Not enough data"
+        metrics["peak_moving_avg"] = "N/A"
 
+    # Convergence (Dragan et al method)
+    max_ts = int(timesteps[-1])
+    bin_edges = np.arange(0, max_ts + 1000, 1000)
+    binned_rewards, binned_ts = [], []
+    for i in range(len(bin_edges) - 1):
+        mask = (timesteps >= bin_edges[i]) & (timesteps < bin_edges[i + 1])
+        if np.any(mask):
+            binned_rewards.append(np.mean(rewards[mask]))
+            binned_ts.append(bin_edges[i + 1])
+
+    smooth_window = 10
+    if len(binned_rewards) >= smooth_window:
+        smoothed = np.convolve(binned_rewards, np.ones(smooth_window) / smooth_window, mode="valid")
+        smoothed_ts = np.array(binned_ts)[smooth_window - 1:]
+        converged_idx = None
+        for i in range(len(smoothed)):
+            if np.all(np.abs(smoothed[i:] - smoothed[i]) <= 0.2):
+                converged_idx = i
+                break
+        metrics["convergence_timestep"] = int(smoothed_ts[converged_idx]) if converged_idx is not None else "Not converged"
+    else:
+        metrics["convergence_timestep"] = "Not enough data"
+
+    return metrics
+
+
+# Plotting
+def plot_training_curve(timesteps, rewards, window, title, filename):
+    fig, ax = plt.subplots(figsize=(10, 5))
+    if len(rewards) >= window:
+        moving_avg = np.convolve(rewards, np.ones(window) / window, mode="valid")
+        ax.plot(timesteps[window - 1:], moving_avg, color="darkblue", linewidth=2,
+                label=f"Success Rate (moving avg, {window} episodes)")
     ax.set_xlabel("Timesteps", fontsize=12)
     ax.set_ylabel("Episode Reward", fontsize=12)
     ax.set_title(title, fontsize=14)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
-
     plt.tight_layout()
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"Training curve saved to: {filename}")
+    print(f"Saved: {filename}")
 
-# Evaluations 
-def evaluate_agent(model, env_fn, n_eval_episodes=100, deterministic=True):
-    """
-    Evaluate a trained agent over n episodes
-    Returns mean reward, std reward, and success rate
-    """
-    eval_env = env_fn()
-    rewards = []
-    successes = 0
 
-    for _ in range(n_eval_episodes):
-        obs, info = eval_env.reset()
-        done = False
-        episode_reward = 0.0
+def plot_entropy_loss(training_ts, entropy_losses, hidden_size, filename):
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(training_ts, entropy_losses, color="purple", linewidth=2)
+    ax.set_xlabel("Timesteps", fontsize=12)
+    ax.set_ylabel("Entropy Loss", fontsize=12)
+    ax.set_title(f"Entropy Loss During Training (hidden={hidden_size})", fontsize=14)
+    ax.grid(True, alpha=0.3)
+    ax.annotate("Lower (more negative) = less exploration",
+                xy=(0.98, 0.98), xycoords="axes fraction",
+                ha="right", va="top", fontsize=9, color="gray")
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {filename}")
 
-        while not done:
-            action = model.select_action(obs, deterministic=deterministic)
-            obs, reward, terminated, truncated, info = eval_env.step(action)
-            episode_reward += reward
-            done = terminated or truncated
 
-        rewards.append(episode_reward)
-        if episode_reward > 0:
-            successes += 1
+def save_summary_table(args, metrics, entropy_loss, filename):
+    is_slippery = not args.deterministic
+    se = metrics["sample_eff_05"]
+    conv = metrics["convergence_timestep"]
+    peak = metrics.get("peak_moving_avg", "N/A")
 
-    eval_env.close()
+    table_data = [
+        ["Environment", f"FrozenLake-v1 {args.map_size}x{args.map_size}"],
+        ["Stochastic", f"{is_slippery}"],
+        ["Slip Probability", f"{args.slip_prob}"],
+        ["Network", f"MLP [{args.hidden_size}, {args.hidden_size}]"],
+        ["Total Timesteps", f"{args.timesteps:,}"],
+        ["Eval Mean Reward", f"{metrics['eval_mean']:.3f} +/- {metrics['eval_std']:.3f}"],
+        ["Eval Success Rate", f"{metrics['success_rate']:.1%}"],
+        ["Peak Training Reward (moving avg)", f"{peak:.3f}" if isinstance(peak, float) else peak],
+        ["Sample Efficiency (threshold=0.5)", f"{se:,} timesteps" if isinstance(se, int) else se],
+        ["Convergence Timestep", f"{conv:,} timesteps" if isinstance(conv, int) else conv],
+        ["Final Entropy Loss", f"{entropy_loss:.4f}"],
+    ]
 
-    mean_reward = np.mean(rewards)
-    std_reward = np.std(rewards)
-    success_rate = successes / n_eval_episodes
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.axis("off")
+    table = ax.table(cellText=table_data, colLabels=["Metric", "Value"],
+                     cellLoc="left", colLoc="left", loc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.5)
+    for j in range(2):
+        table[0, j].set_facecolor("#4472C4")
+        table[0, j].set_text_props(color="white", fontweight="bold")
+    for i in range(1, len(table_data) + 1):
+        color = "#D9E2F3" if i % 2 == 0 else "white"
+        for j in range(2):
+            table[i, j].set_facecolor(color)
 
-    return mean_reward, std_reward, success_rate
+    slip_label = f"slip={args.slip_prob}" if is_slippery else "deterministic"
+    ax.set_title(f"PPO Baseline Results - hidden={args.hidden_size} ({slip_label})",
+                 fontsize=13, fontweight="bold", pad=20)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {filename}")
 
+
+# Main
 def main():
     parser = argparse.ArgumentParser(description="Train PPO on FrozenLake-v1")
-    parser.add_argument("--timesteps", type=int, default=50000,
-                        help="Total training timesteps (default: 50000, matches Dragan et al.)")
-    parser.add_argument("--map_size", type=int, default=4,
-                        help="FrozenLake grid size (default: 4)")
-    parser.add_argument("--hidden_size", type=int, default=16,
-                        help="Neurons per hidden layer (default: 16; try 2, 4, 8, 16)")
-    parser.add_argument("--deterministic", action="store_true",
-                        help="Use non-slippery (deterministic) mode")
-    parser.add_argument("--slip_prob", type=float, default=0.2,
-                        help="Slip probability (default: 0.2, matching Dragan et al.)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducibility")
-    parser.add_argument("--n_eval", type=int, default=500,
-                        help="Number of evaluation episodes")
-    parser.add_argument("--ent_coef", type=float, default=0.01,
-                        help="Entropy coefficient (default: 0.01 from proposal)")
-    parser.add_argument("--output_dir", type=str, default="results",
-                        help="Directory to save outputs")
+    parser.add_argument("--timesteps", type=int, default=50000)
+    parser.add_argument("--map_size", type=int, default=4)
+    parser.add_argument("--hidden_size", type=int, default=64,
+                        help="Neurons per hidden layer (SB3 default: 64)")
+    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--slip_prob", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--n_eval", type=int, default=1000)
+    parser.add_argument("--output_dir", type=str, default="results")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-
     is_slippery = not args.deterministic
+    slip_label = f"slip={args.slip_prob}" if is_slippery else "deterministic"
 
     print("=" * 60)
-    print("PPO on FrozenLake-v1 — Configuration")
+    print("PPO on FrozenLake-v1")
     print("=" * 60)
-    print(f"  Total timesteps:   {args.timesteps}")
-    print(f"  Map size:          {args.map_size}x{args.map_size}")
-    print(f"  Hidden layer size: {args.hidden_size}")
-    print(f"  Slippery:          {is_slippery}")
-    print(f"  Slip probability:  {args.slip_prob}")
-    print(f"  Entropy coef:      {args.ent_coef}")
-    print(f"  Seed:              {args.seed}")
-    print(f"  Eval episodes:     {args.n_eval}")
+    print(f"  Timesteps:     {args.timesteps}")
+    print(f"  Map:           {args.map_size}x{args.map_size}")
+    print(f"  Hidden size:   {args.hidden_size}")
+    print(f"  Slippery:      {is_slippery} ({slip_label})")
+    print(f"  Seed:          {args.seed}")
+    print(f"  Eval episodes: {args.n_eval}")
     print("=" * 60)
 
-    # Create environment
+    # Environment
     env_fn = make_frozenlake_env(
-        map_size=args.map_size,
-        is_slippery=is_slippery,
-        slip_prob=args.slip_prob,
-        seed=args.seed,
-    )
-    vec_env = DummyVecEnv([env_fn])
-
-    # Initialize ModPPO with baseline config
-    # Policy network: two hidden layers of `hidden_size` neurons each
-    # This matches the classical baseline in Dragan et al. (2022)
-    policy_kwargs = dict(
-        net_arch=dict(pi=[args.hidden_size, args.hidden_size],
-                      vf=[args.hidden_size, args.hidden_size]),
+        map_size=args.map_size, is_slippery=is_slippery,
+        slip_prob=args.slip_prob, seed=args.seed,
     )
 
+    # Model - all SB3 PPO defaults except net_arch
     model = ModPPO(
         policy="MlpPolicy",
-        env=vec_env,
+        env=DummyVecEnv([env_fn]),
         learning_rate=3e-4,
         n_steps=2048,
         batch_size=64,
@@ -222,76 +306,64 @@ def main():
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
-        # Value function clipping is set to None (disabled) by default.
-        # Unlike the policy clipping (clip_range), value clipping was NOT
-        # part of the original PPO paper (Schulman et al., 2017). It was
-        # an addition by OpenAI's implementation to prevent large value
-        # function updates. In practice it doesn't consistently help and
-        # can hurt, especially with sparse rewards like FrozenLake (0 or 1).
-        # Set to a float (e.g. 0.2) to enable it as an experiment.
-        clip_range_vf=None,
-        ent_coef=args.ent_coef,
+        clip_range_vf=None,    # not in original PPO paper, disabled by default
+        ent_coef=0.0,          # SB3 default
         vf_coef=0.5,
         max_grad_norm=0.5,
         seed=args.seed,
         verbose=1,
-        policy_kwargs=policy_kwargs,
+        tensorboard_log=os.path.join(args.output_dir, "ppo_tensorboard"),
+        policy_kwargs=dict(
+            net_arch=dict(pi=[args.hidden_size, args.hidden_size],
+                          vf=[args.hidden_size, args.hidden_size]),
+        ),
     )
 
-    print(f"\nPolicy architecture:\n{model.policy}\n")
+    print(f"\nArchitecture:\n{model.policy}\n")
 
-    # Train 
-    callback = RewardLoggerCallback()
+    # Train
+    callback = TrainingLoggerCallback()
     model.learn(total_timesteps=args.timesteps, callback=callback, progress_bar=True)
+    model.save(os.path.join(args.output_dir, "ppo_frozenlake"))
 
-    # Save model 
-    model_path = os.path.join(args.output_dir, "ppo_frozenlake")
-    model.save(model_path)
-    print(f"\nModel saved to: {model_path}.zip")
+    # Collect data
+    timesteps = np.array(callback.timesteps_at_episode)
+    rewards = np.array(callback.episode_rewards)
 
-    # Plot training curve 
-    if len(callback.episode_rewards) > 0:
-        timesteps = np.array(callback.timesteps_at_episode)
-        rewards = np.array(callback.episode_rewards)
-
-        slip_label = f"slip={args.slip_prob}" if is_slippery else "deterministic"
-        title = (f"PPO Training on FrozenLake {args.map_size}x{args.map_size} "
-                 f"({slip_label}, hidden={args.hidden_size})")
-        plot_path = os.path.join(args.output_dir, "ppo_training_curve.png")
-        plot_training_curve(timesteps, rewards, window=50, title=title, filename=plot_path)
-
-        # Also save raw data for later analysis
-        np_path = os.path.join(args.output_dir, "ppo_training_data.npz")
-        np.savez(np_path, timesteps=timesteps, rewards=rewards,
-                 lengths=np.array(callback.episode_lengths))
-        print(f"Raw training data saved to: {np_path}")
-    else:
-        print("Warning: No episode completions recorded during training.")
-
-    # Evaluate 
+    # Evaluate
     print(f"\nEvaluating over {args.n_eval} episodes...")
-    mean_r, std_r, success = evaluate_agent(
-        model, env_fn, n_eval_episodes=args.n_eval, deterministic=True
-    )
-    print(f"\nEvaluation Results:")
-    print(f"  Mean Reward:  {mean_r:.3f} ± {std_r:.3f}")
-    print(f"  Success Rate: {success:.1%} ({int(success * args.n_eval)}/{args.n_eval})")
+    eval_rewards = evaluate_agent(model, env_fn, n_episodes=args.n_eval)
+    metrics = compute_metrics(timesteps, rewards, eval_rewards)
 
-    # Summary for slides 
-    print("\n" + "=" * 60)
-    print("SUMMARY FOR SLIDES")
-    print("=" * 60)
-    print(f"Algorithm:      PPO (SB3 baseline)")
-    print(f"Environment:    FrozenLake-v1 {args.map_size}x{args.map_size}")
-    print(f"Stochastic:     {is_slippery} (slip prob = {args.slip_prob})")
-    print(f"Network:        MLP [{args.hidden_size}, {args.hidden_size}]")
-    print(f"Timesteps:      {args.timesteps}")
-    print(f"Eval Success:   {success:.1%}")
-    print(f"Eval Mean Reward: {mean_r:.3f} ± {std_r:.3f}")
-    if len(callback.episode_rewards) > 0:
-        last_100 = callback.episode_rewards[-100:]
-        print(f"Last 100 ep avg: {np.mean(last_100):.3f}")
-    print("=" * 60)
+    # Get final entropy loss
+    entropy_loss = callback.entropy_losses[-1] if callback.entropy_losses else float("nan")
+
+    # Generate plots
+    plot_training_curve(
+        timesteps, rewards, window=50,
+        title=f"PPO Training on FrozenLake {args.map_size}x{args.map_size} ({slip_label}, hidden={args.hidden_size})",
+        filename=os.path.join(args.output_dir, "ppo_training_curve.png"),
+    )
+    if callback.entropy_losses:
+        plot_entropy_loss(
+            callback.training_timesteps, callback.entropy_losses,
+            args.hidden_size, filename=os.path.join(args.output_dir, "ppo_entropy_loss.png"),
+        )
+    save_summary_table(args, metrics, entropy_loss,
+                       filename=os.path.join(args.output_dir, "ppo_summary.png"))
+
+    # Save raw data
+    np.savez(os.path.join(args.output_dir, "ppo_training_data.npz"),
+             timesteps=timesteps, rewards=rewards,
+             lengths=np.array(callback.episode_lengths))
+
+    # Print results
+    print(f"\nResults:")
+    print(f"  Success Rate:      {metrics['success_rate']:.1%}")
+    print(f"  Eval Reward:       {metrics['eval_mean']:.3f} +/- {metrics['eval_std']:.3f}")
+    print(f"  Sample Efficiency: {metrics['sample_eff_05']}")
+    print(f"  Convergence:       {metrics['convergence_timestep']}")
+    print(f"  Entropy Loss:      {entropy_loss:.4f}")
 
 
 if __name__ == "__main__":
