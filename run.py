@@ -1,8 +1,6 @@
 # Update this file to incorporate any new agent or implementation you create
 
 import argparse
-import os
-from multiprocessing import Pool
 from time import sleep, perf_counter
 import gymnasium as gym
 from stable_baselines3 import A2C
