@@ -1,10 +1,11 @@
 class Node:
     """Represents a single node in the MCTS search tree."""
 
-    def __init__(self, state, parent, action):
+    def __init__(self, state, parent, action, prior=0.0):
         self.state = state
         self.parent: Node = parent
         self.action = action
+        self.prior = prior
         self.children: list[Node] = []
         self.visits = 0  # Number of times this node was visited
         self.value = 0.0  # Total value (reward) accumulated from simulations passing through this node

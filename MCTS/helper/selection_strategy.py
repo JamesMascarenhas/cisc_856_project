@@ -58,7 +58,7 @@ class UCB1Strategy:
         return np.random.choice(best_children)
 
 
-class PUCTStrategy:
+class PUCTStrategy_Uniform:
     """PUCT — Q(v) + C * P(a) * sqrt(N_parent) / (1 + N_v). Used in AlphaGo/AlphaZero.
     Requires nodes to have a `prior` attribute."""
 

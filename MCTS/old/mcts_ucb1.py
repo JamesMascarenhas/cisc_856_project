@@ -1,42 +1,37 @@
 import gymnasium as gym
 import numpy as np
 from copy import deepcopy
-from MCTS.helper.selection_strategy import PUCTStrategy
+from MCTS.helper.selection_strategy import UCB1Strategy
 from MCTS.helper.node import Node
+from MCTS.helper.rollout import RandomRollout
 
 # Rollout policy: Random
 # Final Action selection: Most visited child (robust child)
-# Selection policy: PUCT — Q(v) + C * P(a) * sqrt(N_parent) / (1 + N_v) (used in AlphaGo/AlphaZero)
+# Selection policy: UCB1 — Q(v) + C * sqrt(ln(N_parent) / N_v)
 
 
-class MCTS_PUCT_Uniform:
-    """Monte Carlo Tree Search with PUCT selection (AlphaGo/AlphaZero-style)."""
+class MCTS_UCB1:
+    """Monte Carlo Tree Search algorithm"""
 
     def __init__(self, env: gym.Env, num_simulations, exploration_constant, max_rollout_depth, verbose=False):
         # Headless sim env for cloning — strip render_mode so simulations don't render
         sim_kwargs = {k: v for k, v in env.unwrapped.spec.kwargs.items() if k != "render_mode"}
         self.sim_env: gym.Env = gym.make(env.unwrapped.spec.id, **sim_kwargs)
         self.num_simulations = num_simulations
-        self.max_rollout_depth = max_rollout_depth
-        self.strategy = PUCTStrategy(exploration_constant)
+        self.strategy = UCB1Strategy(exploration_constant)
+        self.rollout_policy = RandomRollout(self.sim_env, max_rollout_depth)
         self.verbose = verbose
 
     def log(self, message):
         if self.verbose:
             print(message)
 
-    def _uniform_prior(self) -> float:
-        """Uniform prior: 1 / num_actions. Replace this with a policy network for a real prior."""
-        return 1.0 / self.sim_env.action_space.n
-
+    # Decides the best action to take from the given state by running MCTS simulations
     def search(self, state):
-        prior = self._uniform_prior()
         # Create the root node for the current state
-        root = Node(state=state, parent=None, action=None, prior=prior)
+        root = Node(state=state, parent=None, action=None)
         # No actions have been tried from the root yet, so initialize the untried actions to all possible actions
         root.untried_actions = list(range(self.sim_env.action_space.n))
-        # by initializing root.visits = 1 so sqrt(parent.visits) is defined for root's children
-        root.visits = 1
 
         for _ in range(self.num_simulations):
             # Selection: Start from the root and select child nodes until we reach a node that is not fully expanded or is terminal
@@ -52,7 +47,7 @@ class MCTS_PUCT_Uniform:
                 reward = (
                     child_node.terminal_reward
                     if child_node.is_terminal()
-                    else step_reward + self.rollout(child_node)
+                    else step_reward + self.rollout_policy(child_node)
                 )
                 self.backpropagate(child_node, reward)
 
@@ -66,7 +61,7 @@ class MCTS_PUCT_Uniform:
             self.log(f"\n--- Search from state {state} (root visits={root.visits}) ---")
             for child in sorted(root.children, key=lambda c: c.visits, reverse=True):
                 q = child.value / child.visits if child.visits > 0 else 0.0
-                puct = self.strategy.score(child)
+                ucb1 = self.strategy.score(child) if child.visits > 0 else float("inf")
                 terminal_tag = (
                     f" [TERMINAL reward={child.terminal_reward:.2f}]" if child.is_terminal() else ""
                 )
@@ -76,8 +71,7 @@ class MCTS_PUCT_Uniform:
                     f"-> state={child.state:<4} "
                     f"visits={child.visits:<6} "
                     f"Q={q:+.6f}  "
-                    f"PUCT={puct:+.6f}  "
-                    f"P={child.prior:.4f}"
+                    f"UCB1={ucb1:+.6f}"
                     f"{terminal_tag}{chosen_tag}"
                 )
 
@@ -102,8 +96,7 @@ class MCTS_PUCT_Uniform:
 
         # Simulate the action in the cloned environment
         next_state, step_reward, done, truncated, info = cloned_env.step(action)
-        prior = self._uniform_prior()
-        child_node = Node(state=next_state, parent=node, action=action, prior=prior)
+        child_node = Node(state=next_state, parent=node, action=action)
 
         # Treat wall hits (same state, not done) as terminal to prevent infinite cycles
         is_wall_hit = next_state == node.state and not done
@@ -121,24 +114,22 @@ class MCTS_PUCT_Uniform:
 
         return child_node, step_reward
 
-    def rollout(self, node: Node) -> float:
-        cloned_env = self.clone_env_state(node.state)
-        # Cumulate rewards until a terminal state is reached or max rollout depth is hit
-        cumulative_reward = 0.0
-        for _ in range(self.max_rollout_depth):
-            action = cloned_env.action_space.sample()
-            _, reward, done, _, _ = cloned_env.step(action)
-            cumulative_reward += reward
-            if done:
-                break
-        return cumulative_reward
-
     def backpropagate(self, node: Node, reward: float):
         # Propagate the reward up the tree
         while node is not None:
             node.visits += 1
             node.value += reward
             node = node.parent
+
+    def get_action_probabilities(self, root: Node):
+        action_probabilities = np.zeros(self.sim_env.action_space.n)
+        total_visits = sum(child.visits for child in root.children)
+        if total_visits == 0:
+            return action_probabilities
+
+        for child in root.children:
+            action_probabilities[child.action] = child.visits / total_visits
+        return action_probabilities
 
     def clone_env_state(self, state) -> gym.Env:
         cloned_env: gym.Env = deepcopy(self.sim_env)

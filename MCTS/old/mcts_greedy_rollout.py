@@ -1,24 +1,33 @@
 import gymnasium as gym
 import numpy as np
 from copy import deepcopy
-from MCTS.helper.selection_strategy import UCB1Strategy
+from MCTS.helper.selection_strategy import UCTStrategy
 from MCTS.helper.node import Node
+from MCTS.helper.rollout import EpsilonGreedyRollout
 
-# Rollout policy: Random
+# Rollout policy: Epsilon-greedy (greedy = minimize Manhattan distance to goal with hole penalty via one-step lookahead)
 # Final Action selection: Most visited child (robust child)
-# Selection policy: UCB1 — Q(v) + C * sqrt(ln(N_parent) / N_v)
+# Selection policy: UCT with reward normalization to [0, 1] based on observed min/max rewards in the tree (to handle different reward scales across environments)
 
 
-class MCTS_UCB1:
+class MCTS_GreedyRollout:
     """Monte Carlo Tree Search algorithm"""
 
-    def __init__(self, env: gym.Env, num_simulations, exploration_constant, max_rollout_depth, verbose=False):
+    def __init__(
+        self,
+        env: gym.Env,
+        num_simulations,
+        exploration_constant,
+        max_rollout_depth,
+        epsilon=0.5,
+        verbose=False,
+    ):
         # Headless sim env for cloning — strip render_mode so simulations don't render
         sim_kwargs = {k: v for k, v in env.unwrapped.spec.kwargs.items() if k != "render_mode"}
         self.sim_env: gym.Env = gym.make(env.unwrapped.spec.id, **sim_kwargs)
         self.num_simulations = num_simulations
-        self.max_rollout_depth = max_rollout_depth
-        self.strategy = UCB1Strategy(exploration_constant)
+        self.strategy = UCTStrategy(exploration_constant)
+        self.rollout_policy = EpsilonGreedyRollout(self.sim_env, max_rollout_depth, env.unwrapped.nrow, epsilon)
         self.verbose = verbose
 
     def log(self, message):
@@ -27,6 +36,7 @@ class MCTS_UCB1:
 
     # Decides the best action to take from the given state by running MCTS simulations
     def search(self, state):
+        self.strategy.reset()
         # Create the root node for the current state
         root = Node(state=state, parent=None, action=None)
         # No actions have been tried from the root yet, so initialize the untried actions to all possible actions
@@ -46,8 +56,9 @@ class MCTS_UCB1:
                 reward = (
                     child_node.terminal_reward
                     if child_node.is_terminal()
-                    else step_reward + self.rollout(child_node)
+                    else step_reward + self.rollout_policy(child_node)
                 )
+                self.strategy.update(reward)
                 self.backpropagate(child_node, reward)
 
         # Get best child from the root — random tiebreaking when visits are equal
@@ -70,7 +81,7 @@ class MCTS_UCB1:
                     f"-> state={child.state:<4} "
                     f"visits={child.visits:<6} "
                     f"Q={q:+.6f}  "
-                    f"UCB1={ucb1:+.6f}"
+                    f"UCT={ucb1:+.6f}"
                     f"{terminal_tag}{chosen_tag}"
                 )
 
@@ -95,6 +106,10 @@ class MCTS_UCB1:
 
         # Simulate the action in the cloned environment
         next_state, step_reward, done, truncated, info = cloned_env.step(action)
+        if step_reward == 1 and done:
+            self.log("Hit a goal during expansion!")
+        elif done:
+            self.log(f"Hit a hole during expansion! State: {next_state}")
         child_node = Node(state=next_state, parent=node, action=action)
 
         # Treat wall hits (same state, not done) as terminal to prevent infinite cycles
@@ -112,18 +127,6 @@ class MCTS_UCB1:
         child_node.untried_actions = [] if child_node.done else list(range(self.sim_env.action_space.n))
 
         return child_node, step_reward
-
-    def rollout(self, node: Node) -> float:
-        cloned_env = self.clone_env_state(node.state)
-        # Cumulate rewards until a terminal state is reached or max rollout depth is hit
-        cumulative_reward = 0.0
-        for _ in range(self.max_rollout_depth):
-            action = cloned_env.action_space.sample()
-            _, reward, done, _, _ = cloned_env.step(action)
-            cumulative_reward += reward
-            if done:
-                break
-        return cumulative_reward
 
     def backpropagate(self, node: Node, reward: float):
         # Propagate the reward up the tree

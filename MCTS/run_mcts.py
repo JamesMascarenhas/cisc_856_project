@@ -1,0 +1,219 @@
+# Plug-and-play MCTS runner — select different strategies via CLI flags
+
+import argparse
+from time import perf_counter
+import gymnasium as gym
+from tqdm import tqdm
+
+from mcts import MCTS
+from helper.selection_strategy import UCTStrategy, UCB1Strategy, PUCTStrategy_Uniform
+from helper.rollout import RandomRollout, EpsilonGreedyRollout
+from helper.expansion import StandardExpansion
+from helper.backprop import StandardBackprop
+from helper.final_action import RobustChild, MaxValue
+from metrics.plot import plot_progress, plot_time_stats
+
+four_x_four_map = [
+    "SFFF",
+    "FHFH",
+    "FFFH",
+    "HFFG",
+]
+
+eight_x_eight_map = [
+    "SFHFFFHF",
+    "FFFHFFFH",
+    "HFFFHFHF",
+    "FFHFFHFF",
+    "FHFFFFHF",
+    "FFFHFFFH",
+    "HFHFFHFF",
+    "FFFHFFHG",
+]
+
+sixteen_x_sixteen_map = [
+    "SFFHFFFHFFFHFFFF",
+    "FHFFFHFFHFFHFFHF",
+    "FFHFFFFFHFFHFFFF",
+    "HFFFHFFHFFFHFHFF",
+    "FFFHFFFHFHFFHFFF",
+    "FHFFHFFFHFFFHFHF",
+    "FFFHFFFFHFHFFHFF",
+    "HFFFHFHFFFHFFFHF",
+    "FFHFFFHFHFFFHFFF",
+    "FHFFHFFFHFHFFHFF",
+    "FFFHFFFHFFHFHFFF",
+    "HFHFFFHFHFFFHFFH",
+    "FFFHFHFFFHFFHFFF",
+    "FHFFFHFFHFHFFFHF",
+    "FFHFHFFFHFFFHFFF",
+    "HFFFHFHFFFHFFHFG",
+]
+
+verbose = False
+
+# --- Strategy factory maps ---
+
+SELECTION_STRATEGIES = {
+    "uct": lambda c: UCTStrategy(c),
+    "ucb1": lambda c: UCB1Strategy(c),
+    "puct_uniform": lambda c: PUCTStrategy_Uniform(c),
+}
+
+ROLLOUT_POLICIES = {
+    "random": lambda sim_env, depth, env: RandomRollout(sim_env, depth),
+    "epsilon_greedy": lambda sim_env, depth, env: EpsilonGreedyRollout(
+        sim_env, depth, env.unwrapped.nrow, epsilon=0.1
+    ),
+}
+
+FINAL_ACTION_STRATEGIES = {
+    "robust_child": RobustChild,
+    "max_value": MaxValue,
+}
+
+
+def build_agent(env, args):
+    sim_count = {4: 1000, 8: 3000, 16: 8000}[args.grid]
+    rollout_depth = {4: 100, 8: 200, 16: 400}[args.grid]
+
+    # Build a headless sim env for components that need it
+    sim_kwargs = {k: v for k, v in env.unwrapped.spec.kwargs.items() if k != "render_mode"}
+    sim_env = gym.make(env.unwrapped.spec.id, **sim_kwargs)
+
+    selection = SELECTION_STRATEGIES[args.selection](args.exploration_constant)
+
+    # PUCT needs a prior on each node; uniform = 1/num_actions
+    prior = (1.0 / sim_env.action_space.n) if args.selection == "puct_uniform" else 0.0
+    expansion = StandardExpansion(sim_env, prior=prior)
+
+    rollout = ROLLOUT_POLICIES[args.rollout](sim_env, rollout_depth, env)
+    backprop = StandardBackprop()
+    final_action = FINAL_ACTION_STRATEGIES[args.final_action]()
+
+    return MCTS(
+        env=env,
+        num_simulations=sim_count,
+        selection_strategy=selection,
+        expansion_strategy=expansion,
+        rollout_policy=rollout,
+        backprop_strategy=backprop,
+        final_action_strategy=final_action,
+        verbose=args.verbose,
+    )
+
+
+def log(message):
+    if verbose:
+        print(f"{message}")
+
+
+def evaluate_mcts(env, agent, episodes, args):
+    """Run MCTS for a fixed number of episodes and report success rate and avg reward."""
+    total_rewards = []
+    episode_times = []
+    steps_per_episode = []
+    avg_search_times = []
+    successes = 0
+
+    for episode in tqdm(range(episodes), desc="Evaluating MCTS"):
+        obs, info = env.reset()
+        episode_reward = 0.0
+        done = False
+        steps = 0
+        episode_search_time = 0.0
+
+        log(f"--- Starting episode {episode + 1} ---")
+        episode_start = perf_counter()
+        while not done:
+            search_start = perf_counter()
+            action = agent.search(obs)
+            episode_search_time += perf_counter() - search_start
+
+            log(f"Taking action: {action} at state: {obs}")
+            obs, reward, terminated, truncated, info = env.step(action)
+            episode_reward += reward
+            steps += 1
+            if terminated:
+                log(f"Episode ended with reward: {reward} (terminated)")
+            done = terminated or truncated
+        episode_times.append(perf_counter() - episode_start)
+
+        total_rewards.append(episode_reward)
+        steps_per_episode.append(steps)
+        avg_search_times.append(episode_search_time / steps if steps > 0 else 0.0)
+        if episode_reward > 0:
+            successes += 1
+
+    print(f"\n=== MCTS Evaluation over {episodes} episodes ===")
+    print(f"Selection:          {args.selection}")
+    print(f"Rollout:            {args.rollout}")
+    print(f"Final action:       {args.final_action}")
+    print(f"Exploration C:      {args.exploration_constant}")
+    print(f"Success rate:       {successes / episodes * 100:.1f}%")
+    print(f"Avg reward:         {sum(total_rewards) / episodes:.4f}")
+    print(f"Min/Max reward:     {min(total_rewards):.4f} / {max(total_rewards):.4f}")
+    print(f"Avg episode time:   {sum(episode_times) / episodes:.2f}s")
+    print(f"Avg steps/episode:  {sum(steps_per_episode) / episodes:.1f}")
+    print(f"Avg search time:    {sum(avg_search_times) / episodes * 1000:.1f}ms/step")
+    plot_progress(total_rewards, args)
+    plot_time_stats(episode_times, steps_per_episode, avg_search_times, args)
+    return total_rewards
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Plug-and-play MCTS for FrozenLake")
+    parser.add_argument("-e", "--episodes", type=int, default=100, help="Number of evaluation episodes")
+
+    # Strategy selection
+    parser.add_argument(
+        "--selection",
+        choices=list(SELECTION_STRATEGIES.keys()),
+        default="uct",
+        help="Selection strategy (default: uct)",
+    )
+    parser.add_argument(
+        "--rollout",
+        choices=list(ROLLOUT_POLICIES.keys()),
+        default="random",
+        help="Rollout policy (default: random)",
+    )
+    parser.add_argument(
+        "--final_action",
+        choices=list(FINAL_ACTION_STRATEGIES.keys()),
+        default="robust_child",
+        help="Final action selection (default: robust_child)",
+    )
+    parser.add_argument(
+        "-c", "--exploration_constant", type=float, default=1.4, help="Exploration constant C (default: 1.4)"
+    )
+
+    # Environment
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--human", action="store_true", default=False, help="Enable human render")
+    parser.add_argument(
+        "-g", "--grid", type=int, choices=[4, 8, 16], default=4, help="Grid size for FrozenLake"
+    )
+    parser.add_argument(
+        "-s", "--slip", action="store_true", default=False, help="Use slippery version of FrozenLake"
+    )
+    args = parser.parse_args()
+    verbose = args.verbose
+
+    # Select the map based on the grid size argument
+    if args.grid == 4:
+        selected_map = four_x_four_map
+    elif args.grid == 8:
+        selected_map = eight_x_eight_map
+    else:
+        selected_map = sixteen_x_sixteen_map
+
+    # Set up the environment
+    if args.human:
+        env = gym.make("FrozenLake-v1", desc=selected_map, is_slippery=args.slip, render_mode="human")
+    else:
+        env = gym.make("FrozenLake-v1", desc=selected_map, is_slippery=args.slip)
+
+    # Build and evaluate
+    agent = build_agent(env, args)
+    evaluate_mcts(env, agent, args.episodes, args)
