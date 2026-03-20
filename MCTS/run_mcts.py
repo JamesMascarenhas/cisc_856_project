@@ -20,7 +20,7 @@ from helper.rollout import RandomRollout, EpsilonGreedyRollout, ValueNetworkRoll
 from helper.value_function import ValueMLP, ValueFunctionOnly, HeuristicValueFunction
 from helper.expansion import FullExpansion, StandardExpansion, ProgressiveWideningExpansion
 from helper.backprop import StandardBackprop, MaxBackprop
-from helper.final_action import RobustChild, MaxValue
+from helper.final_action import RobustChild, MaxValue, SoftmaxVisits
 from metrics.plot import plot_progress, plot_time_stats
 
 GAMMA = 0.99  # Discount factor for value iteration and rollout blending
@@ -48,9 +48,17 @@ verbose = False
 
 SELECTION_CHOICES = ["uct", "ucb1", "puct_uniform", "puct_heuristic", "puct_softmax"]
 ROLLOUT_CHOICES = ["random", "epsilon_greedy", "value_network", "mlp_value_network", "alphazero"]
-FINAL_ACTION_CHOICES = ["robust_child", "max_value"]
+FINAL_ACTION_CHOICES = ["robust_child", "max_value", "softmax_visits"]
 EXPANSION_CHOICES = ["standard", "full", "progressive_widening"]
 BACKPROP_CHOICES = ["standard", "max"]
+
+
+def build_backprop(name):
+    if name == "standard":
+        return StandardBackprop()
+    if name == "max":
+        return MaxBackprop()
+    raise ValueError(f"Unknown backpropagation strategy: {name}")
 
 
 def build_expansion(name, sim_env, prior):
@@ -111,6 +119,8 @@ def build_final_action(name):
         return RobustChild()
     if name == "max_value":
         return MaxValue()
+    if name == "softmax_visits":
+        return SoftmaxVisits(temperature=1.0)
     raise ValueError(f"Unknown final action strategy: {name}")
 
 
@@ -129,7 +139,7 @@ def build_agent(env, args):
     expansion = build_expansion(args.expansion, sim_env, prior)
 
     rollout = build_rollout(args.rollout, sim_env, rollout_depth, env, args.grid)
-    backprop = MaxBackprop() if args.backprop == "max" else StandardBackprop()
+    backprop = build_backprop(args.backprop)
     final_action = build_final_action(args.final_action)
 
     return MCTS(
