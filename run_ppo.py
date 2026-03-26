@@ -6,7 +6,7 @@ Baseline definition:
   - One-hot encoded state input
   - MlpPolicy with [64, 64] hidden layers
   - All SB3 PPO default hyperparameters
-  - 50,000 training timesteps
+  - 100,000 training timesteps
   - Deterministic evaluation over 1000 episodes
   - 3 seeds for stochastic, 1 for deterministic
 
@@ -311,7 +311,11 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
     parser.add_argument("--n_eval", type=int, default=1000)
     parser.add_argument("--ent_coef", type=float, default=0.0)
-    parser.add_argument("--output_dir", type=str, default="results/ppo_baseline")
+    parser.add_argument("--output_dir", type=str, default="results/initial_results/ppo_variations")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="Named subfolder for this run, e.g. 'lr1e3_ent01'. "
+                             "Results saved to <output_dir>/<run_name>/seed{n}/. "
+                             "If omitted, results saved directly to <output_dir>/seed{n}/.")
     args = parser.parse_args()
 
     is_slippery = not args.deterministic
@@ -326,6 +330,8 @@ def main():
     }
 
     mode = "stochastic" if is_slippery else "deterministic"
+    run_root = os.path.join(args.output_dir, args.run_name) if args.run_name else args.output_dir
+
     print("=" * 60)
     print(f"PPO Baseline on FrozenLake-v1 ({mode})")
     print("=" * 60)
@@ -338,11 +344,13 @@ def main():
     print(f"  Seeds:         {args.seeds}")
     print(f"  Eval episodes: {args.n_eval}")
     print(f"  ent_coef:      {args.ent_coef}")
+    print(f"  Run name:      {args.run_name or '(none)'}")
+    print(f"  Output root:   {run_root}")
     print("=" * 60)
 
     all_metrics = []
     for seed in args.seeds:
-        seed_dir = os.path.join(args.output_dir, f"seed{seed}")
+        seed_dir = os.path.join(run_root, f"seed{seed}")
         metrics, entropy = run_single_seed(seed, config, seed_dir)
         all_metrics.append(metrics)
 
