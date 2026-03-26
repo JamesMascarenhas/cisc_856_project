@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 
 import gymnasium as gym
@@ -81,10 +82,13 @@ class TrainingLoggerCallback(BaseCallback):
             pass
 
 
-# Environment factory - standard FrozenLake 4x4 map
-def make_frozenlake_env(is_slippery=True):
+# Environment factory - supports standard map_name or custom desc from maps.json
+def make_frozenlake_env(is_slippery=True, custom_map=None):
     def _init():
-        env = gym.make("FrozenLake-v1", map_name="4x4", is_slippery=is_slippery)
+        if custom_map is not None:
+            env = gym.make("FrozenLake-v1", desc=custom_map, is_slippery=is_slippery)
+        else:
+            env = gym.make("FrozenLake-v1", map_name="4x4", is_slippery=is_slippery)
         env = OneHotWrapper(env)
         env = Monitor(env)
         return env
@@ -183,7 +187,7 @@ def plot_episode_length(timesteps, lengths, window, title, filename):
 
 def save_summary_table(config, metrics, entropy_loss, seed, filename):
     table_data = [
-        ["Environment", "FrozenLake-v1 4x4"],
+        ["Environment", f"FrozenLake-v1 {config['map_size']}x{config['map_size']}"],
         ["Stochastic", f"{config['is_slippery']}"],
         ["Network", f"MLP [{config['hidden_size']}, {config['hidden_size']}]"],
         ["Total Timesteps", f"{config['timesteps']:,}"],
@@ -216,6 +220,48 @@ def save_summary_table(config, metrics, entropy_loss, seed, filename):
     plt.close()
 
 
+def save_aggregate_summary_table(config, all_metrics, all_entropies, seeds, run_name, filename):
+    success_rates = [m["success_rate"] for m in all_metrics]
+    eval_means = [m["eval_mean"] for m in all_metrics]
+
+    per_seed_rows = [[f"Seed {s} Success Rate", f"{m['success_rate']:.1%}"]
+                     for s, m in zip(seeds, all_metrics)]
+
+    table_data = [
+        ["Environment", f"FrozenLake-v1 {config['map_size']}x{config['map_size']}"],
+        ["Stochastic", f"{config['is_slippery']}"],
+        ["Network", f"MLP [{config['hidden_size']}, {config['hidden_size']}]"],
+        ["Learning Rate", f"{config['lr']}"],
+        ["Entropy Coef", f"{config['ent_coef']}"],
+        ["Total Timesteps", f"{config['timesteps']:,}"],
+        ["Seeds", f"{seeds}"],
+        ["Agg Success Rate", f"{np.mean(success_rates):.1%} +/- {np.std(success_rates):.1%}"],
+        ["Agg Eval Reward", f"{np.mean(eval_means):.3f} +/- {np.std(eval_means):.3f}"],
+    ] + per_seed_rows
+
+    fig, ax = plt.subplots(figsize=(9, 0.5 * (len(table_data) + 2) + 1.5))
+    ax.axis("off")
+    table = ax.table(cellText=table_data, colLabels=["Metric", "Value"],
+                     cellLoc="left", colLoc="left", loc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.5)
+    for j in range(2):
+        table[0, j].set_facecolor("#4472C4")
+        table[0, j].set_text_props(color="white", fontweight="bold")
+    for i in range(1, len(table_data) + 1):
+        color = "#D9E2F3" if i % 2 == 0 else "white"
+        for j in range(2):
+            table[i, j].set_facecolor(color)
+
+    mode = "stochastic" if config["is_slippery"] else "deterministic"
+    ax.set_title(f"PPO Aggregate Summary - {mode} | {run_name or 'baseline'}",
+                 fontsize=13, fontweight="bold", pad=20)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
 # Single training run
 def run_single_seed(seed, config, output_dir):
     os.makedirs(output_dir, exist_ok=True)
@@ -226,7 +272,7 @@ def run_single_seed(seed, config, output_dir):
 
     print(f"\n  Seed {seed} | {'stochastic' if is_slippery else 'deterministic'} | hidden={hidden_size}")
 
-    env_fn = make_frozenlake_env(is_slippery=is_slippery)
+    env_fn = make_frozenlake_env(is_slippery=is_slippery, custom_map=config.get("custom_map"))
 
     model = ModPPO(
         policy="MlpPolicy",
@@ -311,12 +357,33 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
     parser.add_argument("--n_eval", type=int, default=1000)
     parser.add_argument("--ent_coef", type=float, default=0.0)
-    parser.add_argument("--output_dir", type=str, default="results/initial_results/ppo_variations")
+    parser.add_argument("--map_size", type=int, default=4,
+                        help="Map size to use: 4, 8, 16, 32, 64. Loads from maps/maps.json.")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Root output directory. Defaults to results/initial_results/ppo_variations "
+                             "for 4x4 and results/NxN for larger maps.")
     parser.add_argument("--run_name", type=str, default=None,
-                        help="Named subfolder for this run, e.g. 'lr1e3_ent01'. "
-                             "Results saved to <output_dir>/<run_name>/seed{n}/. "
-                             "If omitted, results saved directly to <output_dir>/seed{n}/.")
+                        help="Named subfolder for this run, e.g. 'lr1e3'. "
+                             "Results saved to <output_dir>/<run_name>/seed{n}/.")
     args = parser.parse_args()
+
+    # Load custom map from maps.json
+    maps_path = os.path.join(os.path.dirname(__file__), "maps", "maps.json")
+    with open(maps_path, "r") as f:
+        all_maps = json.load(f)
+    map_key = str(args.map_size)
+    if map_key not in all_maps:
+        raise ValueError(f"Map size {args.map_size} not found in maps.json. "
+                         f"Available: {list(all_maps.keys())}")
+    custom_map = all_maps[map_key]
+
+    # Auto-route output dir based on map size if not explicitly set
+    if args.output_dir is not None:
+        base_output_dir = args.output_dir
+    elif args.map_size == 4:
+        base_output_dir = "results/initial_results/ppo_variations"
+    else:
+        base_output_dir = f"results/{args.map_size}x{args.map_size}"
 
     is_slippery = not args.deterministic
     config = {
@@ -327,15 +394,16 @@ def main():
         "timesteps": args.timesteps,
         "n_eval": args.n_eval,
         "ent_coef": args.ent_coef,
+        "custom_map": custom_map,
+        "map_size": args.map_size,
     }
 
     mode = "stochastic" if is_slippery else "deterministic"
-    run_root = os.path.join(args.output_dir, args.run_name) if args.run_name else args.output_dir
-
+    run_root = os.path.join(base_output_dir, args.run_name) if args.run_name else base_output_dir
     print("=" * 60)
-    print(f"PPO Baseline on FrozenLake-v1 ({mode})")
+    print(f"PPO on FrozenLake-v1 ({mode})")
     print("=" * 60)
-    print(f"  Map:           4x4 (standard)")
+    print(f"  Map:           {args.map_size}x{args.map_size} (custom)")
     print(f"  Slippery:      {is_slippery}")
     print(f"  Hidden size:   {args.hidden_size}")
     print(f"  n_steps:       {args.n_steps}")
@@ -349,10 +417,12 @@ def main():
     print("=" * 60)
 
     all_metrics = []
+    all_entropies = []
     for seed in args.seeds:
         seed_dir = os.path.join(run_root, f"seed{seed}")
         metrics, entropy = run_single_seed(seed, config, seed_dir)
         all_metrics.append(metrics)
+        all_entropies.append(entropy)
 
     if len(all_metrics) > 1:
         success_rates = [m["success_rate"] for m in all_metrics]
@@ -364,6 +434,11 @@ def main():
         print(f"  Success Rate:      {np.mean(success_rates):.1%} +/- {np.std(success_rates):.1%}")
         print(f"  Eval Reward:       {np.mean(eval_means):.3f} +/- {np.std(eval_means):.3f}")
         print(f"{'=' * 60}")
+
+        save_aggregate_summary_table(
+            config, all_metrics, all_entropies, args.seeds, args.run_name,
+            filename=os.path.join(run_root, "ppo_aggregate_summary.png")
+        )
 
 
 if __name__ == "__main__":
