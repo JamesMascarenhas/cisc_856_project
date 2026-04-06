@@ -20,7 +20,7 @@ The default configuration is the tuned PPO setup used for the 8x8 FrozenLake exp
 - `__init__.py`  
   Makes the `PPO/` folder importable as a package.
 
-- `base_PPO.py`  
+- `base_ppo.py`  
   Defines `ModPPO`, a lightweight SB3 PPO subclass used for the project experiments.
 
 - `onehot_wrapper.py`  

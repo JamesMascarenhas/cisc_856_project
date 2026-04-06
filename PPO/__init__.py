@@ -1,3 +1,3 @@
-from .base_PPO import ModPPO
+from .base_ppo import ModPPO
 
 __all__ = ["ModPPO"]
