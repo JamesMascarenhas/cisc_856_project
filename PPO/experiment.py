@@ -190,7 +190,6 @@ def run_single_seed(seed, config, output_dir, label_name):
 
     eval_rewards = evaluate_agent(model, eval_env_fn, n_episodes=n_eval)
     metrics = compute_metrics(eval_rewards)
-    entropy_loss = callback.entropy_losses[-1] if callback.entropy_losses else float("nan")
     train_reward_l100 = float("nan")
     if len(rewards_arr) >= 100:
         train_reward_l100 = np.mean(rewards_arr[-100:])
@@ -266,6 +265,7 @@ def run_single_seed(seed, config, output_dir, label_name):
 def run_experiment(args):
     config = build_config(args)
     run_root = get_output_root(args)
+    label_name = args.run_name if args.run_name else "baseline"
 
     print_run_config(config, args, run_root)
 
@@ -273,18 +273,16 @@ def run_experiment(args):
 
     for seed in args.seeds:
         seed_dir = os.path.join(run_root, f"seed{seed}")
-        metrics = run_single_seed(seed, config, seed_dir)
+        metrics = run_single_seed(seed, config, seed_dir, label_name)
         all_metrics.append(metrics)
 
     if len(all_metrics) > 1:
         success_rates = [metric["success_rate"] for metric in all_metrics]
-        eval_means = [metric["eval_mean"] for metric in all_metrics]
 
         print(f"\n{'=' * 60}")
         print(f"AGGREGATE ({len(args.seeds)} seeds)")
         print(f"{'=' * 60}")
-        print(f"  Success Rate:      {np.mean(success_rates):.1%} +/- {np.std(success_rates):.1%}")
-        print(f"  Eval Reward:       {np.mean(eval_means):.3f} +/- {np.std(eval_means):.3f}")
+        print(f"  Agg Success Rate: {np.mean(success_rates):.1%} +/- {np.std(success_rates):.1%}")
         print(f"{'=' * 60}")
 
         save_aggregate_summary_table(

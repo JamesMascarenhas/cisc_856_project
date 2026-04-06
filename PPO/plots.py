@@ -142,7 +142,6 @@ def save_summary_table(config, metrics, seed, run_name, train_reward_l100, episo
 
 def save_aggregate_summary_table(config, all_metrics, seeds, run_name, filename):
     success_rates = [metric["success_rate"] for metric in all_metrics]
-    eval_means = [metric["eval_mean"] for metric in all_metrics]
 
     per_seed_rows = [
         [f"Seed {seed} Success Rate", f"{metric['success_rate']:.1%}"]
