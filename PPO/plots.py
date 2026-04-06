@@ -7,12 +7,12 @@ import numpy as np
 
 def plot_training_curve(timesteps, rewards, window, title, filename):
     fig, ax = plt.subplots(figsize=(10, 5))
-
     if len(rewards) >= window:
         moving_avg = np.convolve(rewards, np.ones(window) / window, mode="valid")
         ax.plot(
             timesteps[window - 1:],
             moving_avg,
+            color="blue",
             linewidth=2,
             label=f"Success Rate (moving avg, {window} episodes)",
         )
@@ -30,8 +30,7 @@ def plot_training_curve(timesteps, rewards, window, title, filename):
 
 def plot_entropy_loss(training_timesteps, entropy_losses, title, filename):
     fig, ax = plt.subplots(figsize=(10, 5))
-
-    ax.plot(training_timesteps, entropy_losses, linewidth=2)
+    ax.plot(training_timesteps, entropy_losses, color="purple", linewidth=2)
     ax.set_xlabel("Timesteps", fontsize=12)
     ax.set_ylabel("Entropy Loss", fontsize=12)
     ax.set_title(title, fontsize=14)
@@ -53,8 +52,7 @@ def plot_entropy_loss(training_timesteps, entropy_losses, title, filename):
 
 def plot_approx_kl(training_timesteps, approx_kls, title, filename):
     fig, ax = plt.subplots(figsize=(10, 5))
-
-    ax.plot(training_timesteps, approx_kls, linewidth=2)
+    ax.plot(training_timesteps, approx_kls, color="red", linewidth=2)
     ax.set_xlabel("Timesteps", fontsize=12)
     ax.set_ylabel("Approx KL Divergence", fontsize=12)
     ax.set_title(title, fontsize=14)
@@ -76,12 +74,12 @@ def plot_approx_kl(training_timesteps, approx_kls, title, filename):
 
 def plot_episode_length(timesteps, lengths, window, title, filename):
     fig, ax = plt.subplots(figsize=(10, 5))
-
     if len(lengths) >= window:
         moving_avg = np.convolve(lengths, np.ones(window) / window, mode="valid")
         ax.plot(
             timesteps[window - 1:],
             moving_avg,
+            color="green",
             linewidth=2,
             label=f"Avg Episode Length ({window} episodes)",
         )
@@ -97,16 +95,18 @@ def plot_episode_length(timesteps, lengths, window, title, filename):
     plt.close()
 
 
-def save_summary_table(config, metrics, entropy_loss, seed, filename):
+def save_summary_table(config, metrics, seed, run_name, train_reward_l100, episode_length_l100, final_kl, filename):
     table_data = [
         ["Environment", "FrozenLake-v1 4x4"],
         ["Stochastic", f"{config['is_slippery']}"],
         ["Network", f"MLP [{config['hidden_size']}, {config['hidden_size']}]"],
         ["Total Timesteps", f"{config['timesteps']:,}"],
         ["Seed", f"{seed}"],
-        ["Eval Mean Reward", f"{metrics['eval_mean']:.3f} +/- {metrics['eval_std']:.3f}"],
         ["Eval Success Rate", f"{metrics['success_rate']:.1%}"],
-        ["Final Entropy Loss", f"{entropy_loss:.4f}"],
+        ["Eval Reward Std", f"{metrics['eval_std']:.3f}"],
+        ["Train Reward (last 100)", f"{train_reward_l100:.3f}"],
+        ["Episode Length (last 100)", f"{episode_length_l100:.1f}"],
+        ["Final KL", f"{final_kl:.5f}"]
     ]
 
     fig, ax = plt.subplots(figsize=(9, 4.5))
@@ -161,7 +161,6 @@ def save_aggregate_summary_table(config, all_metrics, seeds, run_name, filename)
         ["Total Timesteps", f"{config['timesteps']:,}"],
         ["Seeds", f"{seeds}"],
         ["Agg Success Rate", f"{np.mean(success_rates):.1%} +/- {np.std(success_rates):.1%}"],
-        ["Agg Eval Reward", f"{np.mean(eval_means):.3f} +/- {np.std(eval_means):.3f}"],
     ] + per_seed_rows
 
     fig, ax = plt.subplots(figsize=(9, 0.5 * (len(table_data) + 2) + 1.5))

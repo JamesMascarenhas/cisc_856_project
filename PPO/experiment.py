@@ -129,7 +129,7 @@ def print_run_config(config, args, run_root):
     print("=" * 60)
 
 
-def run_single_seed(seed, config, output_dir):
+def run_single_seed(seed, config, output_dir, label_name):
     os.makedirs(output_dir, exist_ok=True)
 
     is_slippery = config["is_slippery"]
@@ -137,7 +137,7 @@ def run_single_seed(seed, config, output_dir):
     timesteps = config["timesteps"]
     n_eval = config["n_eval"]
 
-    print(f"\n  Seed {seed} | {'stochastic' if is_slippery else 'deterministic'} | hidden={hidden_size}")
+    print(f"\nSeed {seed}")
 
     train_env_fn = make_frozenlake_env(
         is_slippery=is_slippery,
@@ -191,12 +191,21 @@ def run_single_seed(seed, config, output_dir):
     eval_rewards = evaluate_agent(model, eval_env_fn, n_episodes=n_eval)
     metrics = compute_metrics(eval_rewards)
     entropy_loss = callback.entropy_losses[-1] if callback.entropy_losses else float("nan")
+    train_reward_l100 = float("nan")
+    if len(rewards_arr) >= 100:
+        train_reward_l100 = np.mean(rewards_arr[-100:])
+    
+    episode_length_l100 = float("nan")
+    if len(lengths_arr) >= 100:
+        episode_length_l100 = np.mean(lengths_arr[-100:])
+    
+    final_kl = callback.approx_kls[-1] if callback.approx_kls else float("nan")
 
     plot_training_curve(
         timesteps_arr,
         rewards_arr,
         window=100,
-        title=f"Baseline Learning Curve (seed={seed})",
+        title=f"{label_name} Learning Curve (seed={seed})",
         filename=os.path.join(output_dir, f"ppo_training_curve_seed{seed}.png"),
     )
 
@@ -204,7 +213,7 @@ def run_single_seed(seed, config, output_dir):
         plot_entropy_loss(
             callback.training_timesteps,
             callback.entropy_losses,
-            title=f"Baseline Entropy Loss (seed={seed})",
+            title=f"{label_name} Entropy Loss (seed={seed})",
             filename=os.path.join(output_dir, f"ppo_entropy_loss_seed{seed}.png"),
         )
 
@@ -212,7 +221,7 @@ def run_single_seed(seed, config, output_dir):
         plot_approx_kl(
             callback.training_timesteps,
             callback.approx_kls,
-            title=f"Baseline PPO Stability Signal (seed={seed})",
+            title=f"{label_name} PPO Stability Signal (seed={seed})",
             filename=os.path.join(output_dir, f"ppo_approx_kl_seed{seed}.png"),
         )
 
@@ -221,15 +230,18 @@ def run_single_seed(seed, config, output_dir):
             timesteps_arr,
             lengths_arr,
             window=100,
-            title=f"Baseline Episode Length Curve (seed={seed})",
+           title=f"{label_name} Episode Length Curve (seed={seed})",
             filename=os.path.join(output_dir, f"ppo_episode_length_seed{seed}.png"),
         )
 
     save_summary_table(
         config,
         metrics,
-        entropy_loss,
         seed,
+        label_name,
+        train_reward_l100,
+        episode_length_l100,
+        final_kl,
         filename=os.path.join(output_dir, f"ppo_summary_seed{seed}.png"),
     )
 
@@ -241,12 +253,14 @@ def run_single_seed(seed, config, output_dir):
     )
 
     print(
-        f"    Success: {metrics['success_rate']:.1%} | "
-        f"Reward: {metrics['eval_mean']:.3f} +/- {metrics['eval_std']:.3f} | "
-        f"Entropy: {entropy_loss:.4f}"
-    )
+        f"  Success Rate: {metrics['success_rate']:.1%} | "
+        f"Reward Std: {metrics['eval_std']:.3f} | "
+        f"Train Reward (last 100): {train_reward_l100:.3f} | "
+        f"Episode Length (last 100): {episode_length_l100:.1f} | "
+        f"Final KL: {final_kl:.5f}"
+)
 
-    return metrics, entropy_loss
+    return metrics
 
 
 def run_experiment(args):
@@ -256,13 +270,11 @@ def run_experiment(args):
     print_run_config(config, args, run_root)
 
     all_metrics = []
-    all_entropies = []
 
     for seed in args.seeds:
         seed_dir = os.path.join(run_root, f"seed{seed}")
-        metrics, entropy = run_single_seed(seed, config, seed_dir)
+        metrics = run_single_seed(seed, config, seed_dir)
         all_metrics.append(metrics)
-        all_entropies.append(entropy)
 
     if len(all_metrics) > 1:
         success_rates = [metric["success_rate"] for metric in all_metrics]
