@@ -51,7 +51,9 @@ def make_frozenlake_env(
 
 
 def load_map(map_size):
-    maps_path = os.path.join(os.path.dirname(__file__), "maps", "maps.json")
+    maps_path = os.path.join(os.path.dirname(__file__), "..", "maps.json")
+    maps_path = os.path.abspath(maps_path)  
+    
     with open(maps_path, "r") as file:
         all_maps = json.load(file)
 
