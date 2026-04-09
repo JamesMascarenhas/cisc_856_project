@@ -117,9 +117,9 @@ pip3 install gymnasium stable-baselines3 torch matplotlib tqdm
 ### 7. PPO: Optimized Configuration
 *lr=1e-3, 200k timesteps, seed 2*
 
-| Learning Curve | Episode Length | KL Divergence |
+| | | |
 |---|---|---|
-| <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_training_curve_seed2.png" width="250"/> | <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_episode_length_seed2.png" width="250"/> | <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_approx_kl_seed2.png" width="250"/> |
+| <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_training_curve_seed2.png" width="400"/> | <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_episode_length_seed2.png" width="400"/> | <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_approx_kl_seed2.png" width="400"/> |
 
 ---
 
