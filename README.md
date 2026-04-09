@@ -54,7 +54,10 @@ FrozenLake-v1 on 8x8 grid, with and without slipperiness.
 pip3 install gymnasium stable-baselines3 torch matplotlib tqdm
 ```
 
+
 # Supplemental Results
+*All PPO plots show seed 2 for consistency across configurations, except vf_coef = 1.0 verification which shows seed 4 as the failure case. Note that y-axis scales differ between plots, keep that in mind when comparing across configs*
+
 ## Table of Contents
 1. [DQN: One-Hot vs Discrete Encoding](#1-dqn-one-hot-vs-discrete-encoding)
 2. [DQN: Reward Shaping vs Baseline](#2-dqn-reward-shaping-vs-baseline)
@@ -154,7 +157,7 @@ pip3 install gymnasium stable-baselines3 torch matplotlib tqdm
 ### 9. PPO: Value Loss Coefficient Variation
 *Left to right: learning curve, episode length, KL divergence*
 
-#### vf_coefc = 0.25
+#### vf_coef = 0.25
 <p>
   <img src="PPO/results/8x8/vf_coef_025/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/vf_coef_025/seed2/ppo_episode_length_seed2.png" width="32%"/>
