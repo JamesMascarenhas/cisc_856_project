@@ -115,7 +115,7 @@ pip3 install gymnasium stable-baselines3 torch matplotlib tqdm
 ---
 
 ### 7. PPO: Optimized Configuration
-*lr=1e-3, 200k timesteps, seed 2 — left to right: learning curve, episode length, KL divergence*
+*Left to right: learning curve, episode length, KL divergence*
 
 <p>
   <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_training_curve_seed2.png" width="32%"/>
@@ -126,23 +126,23 @@ pip3 install gymnasium stable-baselines3 torch matplotlib tqdm
 ---
 
 ### 8. PPO: GAE Lambda Variation
-*All runs at 3 seeds, seed 2 shown — left to right: learning curve, episode length, KL divergence*
+*Left to right: learning curve, episode length, KL divergence*
 
-#### λ=0.99
+#### λ = 0.99
 <p>
   <img src="PPO/results/8x8/gae_099/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/gae_099/seed2/ppo_episode_length_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/gae_099/seed2/ppo_approx_kl_seed2.png" width="32%"/>
 </p>
 
-#### λ=0.95 (baseline)
+#### λ = 0.95 (optimized baseline)
 <p>
   <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_episode_length_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_approx_kl_seed2.png" width="32%"/>
 </p>
 
-#### λ=0.85
+#### λ = 0.85
 <p>
   <img src="PPO/results/8x8/gae_085/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/gae_085/seed2/ppo_episode_length_seed2.png" width="32%"/>
@@ -154,32 +154,32 @@ pip3 install gymnasium stable-baselines3 torch matplotlib tqdm
 ### 9. PPO: Value Loss Coefficient Variation
 *Left to right: learning curve, episode length, KL divergence*
 
-#### vf_coef=0.25
+#### vf_coefc = 0.25
 <p>
   <img src="PPO/results/8x8/vf_coef_025/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/vf_coef_025/seed2/ppo_episode_length_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/vf_coef_025/seed2/ppo_approx_kl_seed2.png" width="32%"/>
 </p>
 
-#### vf_coef=0.5 (baseline)
+#### vf_coef = 0.5 (optimized baseline)
 <p>
   <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_episode_length_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_approx_kl_seed2.png" width="32%"/>
 </p>
 
-#### vf_coef=1.0 (3 seeds — appears promising)
+#### vf_coef = 1.0
 <p>
   <img src="PPO/results/8x8/vf_coef_10/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/vf_coef_10/seed2/ppo_episode_length_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/vf_coef_10/seed2/ppo_approx_kl_seed2.png" width="32%"/>
 </p>
 
-#### vf_coef=1.0 (5-seed verification — variance increase)
+#### vf_coef = 1.0 (5 seeds fails at specifically seed 4)
 <p>
-  <img src="PPO/results/8x8/vf_coef_10_5seeds/seed2/ppo_training_curve_seed2.png" width="32%"/>
-  <img src="PPO/results/8x8/vf_coef_10_5seeds/seed2/ppo_episode_length_seed2.png" width="32%"/>
-  <img src="PPO/results/8x8/vf_coef_10_5seeds/seed2/ppo_approx_kl_seed2.png" width="32%"/>
+  <img src="PPO/results/8x8/vf_coef_10_5seeds/seed4/ppo_training_curve_seed4.png" width="32%"/>
+  <img src="PPO/results/8x8/vf_coef_10_5seeds/seed4/ppo_episode_length_seed4.png" width="32%"/>
+  <img src="PPO/results/8x8/vf_coef_10_5seeds/seed4/ppo_approx_kl_seed4.png" width="32%"/>
 </p>
 
 ---
@@ -194,14 +194,14 @@ pip3 install gymnasium stable-baselines3 torch matplotlib tqdm
   <img src="PPO/results/8x8/lr1e3_200k/seed2/ppo_approx_kl_seed2.png" width="32%"/>
 </p>
 
-#### Step Penalty=0.01
+#### Step Penalty = 0.01
 <p>
   <img src="PPO/results/8x8/step_penalty_001/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/step_penalty_001/seed2/ppo_episode_length_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/step_penalty_001/seed2/ppo_approx_kl_seed2.png" width="32%"/>
 </p>
 
-#### PBRS Manhattan=0.01
+#### PBRS Manhattan = 0.01
 <p>
   <img src="PPO/results/8x8/manhattan_001/seed2/ppo_training_curve_seed2.png" width="32%"/>
   <img src="PPO/results/8x8/manhattan_001/seed2/ppo_episode_length_seed2.png" width="32%"/>
